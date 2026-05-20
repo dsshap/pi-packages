@@ -1,0 +1,52 @@
+{
+  "name": "@dsshap/pi-pi-experts",
+  "version": "1.0.0",
+  "description": "Pi Pi — meta-agent that builds Pi agents using a team of parallel research experts. Derived from IndyDevDan's pi-vs-claude-code (https://github.com/disler/pi-vs-claude-code).",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "meta-agent",
+    "agents",
+    "experts",
+    "orchestration"
+  ],
+  "type": "module",
+  "files": [
+    "extensions/",
+    "agents/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsshap/pi-packages.git",
+    "directory": "packages/pi-pi-experts"
+  },
+  "author": "dsshap",
+  "contributors": [
+    {
+      "name": "IndyDevDan",
+      "url": "https://github.com/disler"
+    }
+  ],
+  "originalAuthor": {
+    "name": "IndyDevDan",
+    "url": "https://github.com/disler/pi-vs-claude-code"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/dsshap/pi-packages/issues"
+  },
+  "homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-pi-experts#readme"
+}

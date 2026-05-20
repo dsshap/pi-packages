@@ -1,0 +1,44 @@
+{
+  "name": "pi-packages",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Custom extensions for pi, the AI coding agent",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "check": "npm run lint && npm run typecheck",
+    "check:ci": "biome ci . && tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-packages",
+    "pi-extensions",
+    "pi-coding-agent",
+    "extensions",
+    "ai",
+    "coding-assistant"
+  ],
+  "pi": {
+    "extensions": [
+      "./packages/pi-pi-experts/extensions/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.5",
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-tui": "^0.74.0",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.1.24",
+    "typescript": "^5.5.0",
+    "vitest": "^4.0.18"
+  },
+  "license": "MIT"
+}

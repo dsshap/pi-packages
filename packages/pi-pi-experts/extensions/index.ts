@@ -33,8 +33,8 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 // ── Types ────────────────────────────────────────
@@ -55,6 +55,43 @@ interface ExpertState {
 	lastLine: string;
 	queryCount: number;
 	timer?: ReturnType<typeof setInterval>;
+}
+
+// Shape of the `query_experts` tool args and result.details. Kept here so
+// renderCall/renderResult can stay strictly typed without `any` casts.
+interface QueryItem {
+	expert: string;
+	question?: string;
+}
+
+interface QueryExpertsArgs {
+	queries: QueryItem[];
+}
+
+interface ExpertResultRow {
+	expert: string;
+	question?: string;
+	status: "done" | "error" | "researching" | string;
+	elapsed: number;
+	exitCode?: number;
+	output?: string;
+	fullOutput?: string;
+}
+
+interface QueryExpertsDetails {
+	queries?: QueryItem[];
+	results: ExpertResultRow[];
+	status?: string;
+}
+
+// Safely extract a human-readable message from a Promise rejection reason
+// without resorting to `any`.
+function reasonMessage(reason: unknown): string {
+	if (reason && typeof reason === "object" && "message" in reason) {
+		const m = (reason as { message?: unknown }).message;
+		if (m !== undefined) return String(m);
+	}
+	return String(reason);
 }
 
 // ── Helpers ──────────────────────────────────────
@@ -116,7 +153,11 @@ const BG_RESET = "\x1b[49m";
 export default function (pi: ExtensionAPI) {
 	const experts: Map<string, ExpertState> = new Map();
 	let gridCols = 3;
-	let widgetCtx: any;
+	// Captured from whichever context first activates the widget — both
+	// command handlers (ExtensionCommandContext) and event handlers like
+	// session_start (ExtensionContext) flow through here, so we widen to the
+	// common base type that both extend.
+	let widgetCtx: ExtensionContext | undefined;
 
 	// Agents ship bundled inside this package, alongside the extension file.
 	const PI_PI_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "agents");
@@ -159,7 +200,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Grid Rendering ───────────────────────────
 
-	function renderCard(state: ExpertState, colWidth: number, theme: any): string[] {
+	function renderCard(state: ExpertState, colWidth: number, theme: Theme): string[] {
 		const w = colWidth - 2;
 		const truncate = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 3)}...` : s);
 
@@ -227,7 +268,7 @@ export default function (pi: ExtensionAPI) {
 	function updateWidget() {
 		if (!widgetCtx) return;
 
-		widgetCtx.ui.setWidget("pi-pi-grid", (_tui: any, theme: any) => {
+		widgetCtx.ui.setWidget("pi-pi-grid", (_tui: TUI, theme: Theme) => {
 			return {
 				render(width: number): string[] {
 					if (experts.size === 0) {
@@ -268,7 +309,7 @@ export default function (pi: ExtensionAPI) {
 	function queryExpert(
 		expertName: string,
 		question: string,
-		ctx: any,
+		ctx: ExtensionContext,
 	): Promise<{ output: string; exitCode: number; elapsed: number }> {
 		const key = expertName.toLowerCase();
 		const state = experts.get(key);
@@ -403,7 +444,7 @@ export default function (pi: ExtensionAPI) {
 
 				ctx.ui.notify(
 					`${displayName(state.def.name)} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
-					state.status === "done" ? "success" : "error",
+					state.status === "done" ? "info" : "error",
 				);
 
 				resolve({
@@ -512,7 +553,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 							status: "error" as const,
 							elapsed: 0,
 							exitCode: 1,
-							output: `Error: ${(s.reason as any)?.message || s.reason}`,
+							output: `Error: ${reasonMessage(s.reason)}`,
 							fullOutput: "",
 						},
 			);
@@ -533,8 +574,8 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 		},
 
 		renderCall(args, theme) {
-			const queries = (args as any).queries || [];
-			const names = queries.map((q: any) => displayName(q.expert || "?")).join(", ");
+			const queries = (args as QueryExpertsArgs).queries ?? [];
+			const names = queries.map((q) => displayName(q.expert || "?")).join(", ");
 			return new Text(
 				theme.fg("toolTitle", theme.bold("query_experts ")) +
 					theme.fg("accent", `${queries.length} parallel`) +
@@ -546,14 +587,14 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 		},
 
 		renderResult(result, options, theme) {
-			const details = result.details as any;
+			const details = result.details as QueryExpertsDetails | undefined;
 			if (!details?.results) {
 				const text = result.content[0];
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
 			}
 
 			if (options.isPartial || details.status === "researching") {
-				const count = details.queries?.length || "?";
+				const count = details.queries?.length ?? "?";
 				return new Text(
 					theme.fg("accent", `◉ ${count} experts`) + theme.fg("dim", " researching in parallel..."),
 					0,
@@ -561,7 +602,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 				);
 			}
 
-			const lines = (details.results as any[]).map((r: any) => {
+			const lines = details.results.map((r) => {
 				const icon = r.status === "done" ? "✓" : "✗";
 				const color = r.status === "done" ? "success" : "error";
 				const elapsed = typeof r.elapsed === "number" ? Math.round(r.elapsed / 1000) : 0;
@@ -571,7 +612,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 			const header = lines.join(theme.fg("dim", " · "));
 
 			if (options.expanded && details.results) {
-				const expanded = (details.results as any[]).map((r: any) => {
+				const expanded = details.results.map((r) => {
 					const output = r.fullOutput
 						? r.fullOutput.length > 4000
 							? `${r.fullOutput.slice(0, 4000)}\n... [truncated]`

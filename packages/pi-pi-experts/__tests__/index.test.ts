@@ -44,7 +44,8 @@ describe("agent persona frontmatter", () => {
 			const raw = readFileSync(resolve(agentsDir, file), "utf-8");
 			const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
 			expect(match, `${file} missing frontmatter`).not.toBeNull();
-			const fm = match![1];
+			if (!match) throw new Error(`${file} missing frontmatter`);
+			const fm = match[1];
 			if (file === "pi-orchestrator.md") {
 				expect(fm).toMatch(/name:\s*pi-orchestrator/);
 			} else {

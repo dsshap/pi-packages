@@ -1,0 +1,43 @@
+{
+	"name": "@dsshap/pi-extension-resources",
+	"version": "1.0.0",
+	"description": "Pi Extension Resources — auto-loads the prompts/ and skills/ folders shipped alongside any loaded Pi extension package.",
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-extension",
+		"pi-coding-agent",
+		"prompts",
+		"skills",
+		"resources",
+		"companions"
+	],
+	"type": "module",
+	"files": [
+		"extensions/",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/index.ts"
+		]
+	},
+	"dependencies": {
+		"jiti": "^2.6.5"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.74.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dsshap/pi-packages.git",
+		"directory": "packages/pi-extension-resources"
+	},
+	"author": "dsshap",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/dsshap/pi-packages/issues"
+	},
+	"homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-extension-resources#readme"
+}

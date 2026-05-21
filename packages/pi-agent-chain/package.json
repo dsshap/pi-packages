@@ -1,0 +1,55 @@
+{
+	"name": "@dsshap/pi-agent-chain",
+	"version": "1.0.0",
+	"description": "Pi Agent Chain — sequential pipeline orchestrator that runs opinionated, repeatable multi-agent workflows. Derived from IndyDevDan's pi-vs-claude-code (https://github.com/disler/pi-vs-claude-code).",
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-extension",
+		"pi-coding-agent",
+		"agents",
+		"orchestration",
+		"pipeline",
+		"chain"
+	],
+	"type": "module",
+	"files": [
+		"extensions/",
+		"agents/",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/index.ts"
+		]
+	},
+	"dependencies": {
+		"@dsshap/pi-subagent-flags": "^1.0.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.74.0",
+		"@earendil-works/pi-tui": ">=0.74.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dsshap/pi-packages.git",
+		"directory": "packages/pi-agent-chain"
+	},
+	"author": "dsshap",
+	"contributors": [
+		{
+			"name": "IndyDevDan",
+			"url": "https://github.com/disler"
+		}
+	],
+	"originalAuthor": {
+		"name": "IndyDevDan",
+		"url": "https://github.com/disler/pi-vs-claude-code"
+	},
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/dsshap/pi-packages/issues"
+	},
+	"homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-agent-chain#readme"
+}

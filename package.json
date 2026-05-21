@@ -31,6 +31,7 @@
   ],
   "pi": {
     "extensions": [
+      "./packages/pi-grid-manager/extensions/index.ts",
       "./packages/pi-pi-experts/extensions/index.ts",
       "./packages/pi-agent-chain/extensions/index.ts"
     ]

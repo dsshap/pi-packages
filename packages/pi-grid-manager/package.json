@@ -1,0 +1,36 @@
+{
+	"name": "@dsshap/pi-grid-manager",
+	"version": "1.0.0",
+	"description": "Pi UI middleware: intercepts ui.setWidget() calls from other extensions and composes them into a single grid (configurable columns via /grid N). Other extensions need zero changes — load this FIRST in your pi.extensions array.",
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-extension",
+		"pi-coding-agent",
+		"grid",
+		"layout",
+		"ui"
+	],
+	"type": "module",
+	"files": [
+		"extensions/",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.74.0",
+		"@earendil-works/pi-tui": ">=0.74.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dsshap/pi-packages.git",
+		"directory": "packages/pi-grid-manager"
+	},
+	"author": "dsshap",
+	"license": "MIT"
+}

@@ -6,7 +6,7 @@ A shared helper for [Pi](https://github.com/badlogic/pi-mono) extensions that sp
 
 ## Audience
 
-This README is for **extension authors** who want to add a local-config hook to their own Pi extension. If you are an end user trying to configure brand-leak protection in `@dsshap/pi-pi-experts` or `@dsshap/pi-agent-chain`, see those extensions' READMEs — you only need to create `~/.pi/agent/subagent-flags.json`.
+This README is for **extension authors** who want to add a local-config hook to their own Pi extension. If you are an end user trying to configure brand-leak protection in `@dsshap/pi-pi-experts` or `@dsshap/pi-agent-chain`, see those extensions' READMEs — you only need to create `~/.pi/agent/extensions/subagent-flags.json`.
 
 Consumers in this repo:
 
@@ -71,8 +71,8 @@ Tell your users which key to set, and point them at the config-file layout below
 Two locations are checked, in order; project overrides global per top-level key:
 
 ```
-~/.pi/agent/subagent-flags.json      (global)
-<cwd>/.pi/subagent-flags.json        (project)
+~/.pi/agent/extensions/subagent-flags.json   (global)
+<cwd>/.pi/subagent-flags.json                (project)
 ```
 
 Schema:
@@ -115,7 +115,7 @@ export function resolveSubagentExtras(
   extensionName: string,
 ): string[];
 
-/** Reads ~/.pi/agent/subagent-flags.json + <cwd>/.pi/subagent-flags.json. */
+/** Reads ~/.pi/agent/extensions/subagent-flags.json + <cwd>/.pi/subagent-flags.json. */
 export function loadSubagentExtraArgs(
   extensionName: string,
   cwd: string,

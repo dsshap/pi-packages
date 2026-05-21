@@ -102,7 +102,7 @@ interface QueryExpertsDetails {
 }
 
 // Subagent flags hook: lets local users splice extra `pi` flags into every
-// sub-agent spawn from this extension via ~/.pi/agent/subagent-flags.json.
+// sub-agent spawn from this extension via ~/.pi/agent/extensions/subagent-flags.json.
 // See @dsshap/pi-subagent-flags for the schema and supported config paths.
 const EXTENSION_NAME = "pi-pi-experts";
 

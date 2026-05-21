@@ -61,8 +61,9 @@ export function resolveSubagentExtras(
 }
 
 /**
- * Convenience filesystem wrapper. Reads `~/.pi/agent/subagent-flags.json`
- * (global) and `<cwd>/.pi/subagent-flags.json` (project, overrides global),
+ * Convenience filesystem wrapper. Reads
+ * `~/.pi/agent/extensions/subagent-flags.json` (global) and
+ * `<cwd>/.pi/subagent-flags.json` (project, overrides global),
  * then resolves the `extraArgs` for the named extension.
  *
  * Returns `[]` when no config file exists, the file is unreadable or
@@ -83,7 +84,7 @@ export function resolveSubagentExtras(
  */
 export function loadSubagentExtraArgs(extensionName: string, cwd: string): string[] {
 	const paths = [
-		join(homedir(), ".pi", "agent", "subagent-flags.json"),
+		join(homedir(), ".pi", "agent", "extensions", "subagent-flags.json"),
 		join(cwd, ".pi", "subagent-flags.json"),
 	];
 	const raws = paths.map((p) => {

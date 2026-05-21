@@ -6,9 +6,10 @@ Pi packages can include extensions, skills, prompt templates, and themes. See th
 
 ## Packages
 
-| Package | Type | Description |
-|---------|------|-------------|
-| [@dsshap/pi-pi-experts](./packages/pi-pi-experts/) | Extension | Pi Pi — meta-agent that builds Pi agents using a team of parallel research experts |
+| Package | Description |
+|---------|-------------|
+| [@dsshap/pi-pi-experts](./packages/pi-pi-experts/) | Pi Pi — meta-agent that builds Pi agents using a team of parallel research experts |
+| [@dsshap/pi-agent-chain](./packages/pi-agent-chain/) | Agent Chain — sequential pipeline orchestrator for opinionated, repeatable multi-agent workflows |
 
 Each package has its own README with setup instructions, usage, and configuration details.
 
@@ -39,9 +40,20 @@ pi install npm:@dsshap/<package-name>
 
 ```bash
 pi install npm:@dsshap/pi-pi-experts
+pi install npm:@dsshap/pi-agent-chain
 ```
 
 </details>
+
+## Internal Libraries
+
+Workspace-internal helper packages used by the extensions above. **Not Pi extensions** — do not install with `pi install`. They are pulled in automatically as transitive npm dependencies when you install the consuming extension.
+
+| Package | Description |
+|---------|-------------|
+| [@dsshap/pi-subagent-flags](./libraries/pi-subagent-flags/) | Shared helper that lets local users splice extra `pi` flags into every sub-agent subprocess spawn from a named extension. Consumed by `pi-pi-experts` and `pi-agent-chain`. |
+
+Listed here for contributor reference. End users never need to install or configure these directly.
 
 ## Uninstall
 

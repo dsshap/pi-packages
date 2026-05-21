@@ -9,7 +9,11 @@
     "lint:fix": "biome check --write .",
     "check": "npm run lint && npm run typecheck",
     "check:ci": "biome ci . && tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "npx tsx packages/pi-agent-chain/__tests__/chain-runtime-validate.mts",
+    "test:e2e:spawn": "node packages/pi-agent-chain/__tests__/spawn-validate.mjs",
+    "test:e2e:abort": "npx tsx packages/pi-agent-chain/__tests__/abort-validate.mts",
+    "test:e2e:shutdown": "npx tsx packages/pi-agent-chain/__tests__/shutdown-validate.mts"
   },
   "workspaces": [
     "packages/*",
@@ -27,7 +31,8 @@
   ],
   "pi": {
     "extensions": [
-      "./packages/pi-pi-experts/extensions/index.ts"
+      "./packages/pi-pi-experts/extensions/index.ts",
+      "./packages/pi-agent-chain/extensions/index.ts"
     ]
   },
   "devDependencies": {

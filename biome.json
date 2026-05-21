@@ -9,7 +9,7 @@
 	"formatter": {
 		"enabled": true,
 		"indentStyle": "tab",
-		"lineWidth": 120
+		"lineWidth": 130
 	},
 	"files": {
 		"includes": ["packages/*/extensions/**/*.ts", "packages/*/__tests__/**/*.ts", "vitest.config.ts"]

@@ -24,6 +24,9 @@
       "./extensions/index.ts"
     ]
   },
+  "dependencies": {
+    "@dsshap/pi-subagent-flags": "^1.0.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.74.0",
     "@earendil-works/pi-tui": ">=0.74.0"

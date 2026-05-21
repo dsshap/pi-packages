@@ -33,6 +33,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadSubagentExtraArgs } from "@dsshap/pi-subagent-flags";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -83,6 +84,11 @@ interface QueryExpertsDetails {
 	results: ExpertResultRow[];
 	status?: string;
 }
+
+// Subagent flags hook: lets local users splice extra `pi` flags into every
+// sub-agent spawn from this extension via ~/.pi/agent/subagent-flags.json.
+// See @dsshap/pi-subagent-flags for the schema and supported config paths.
+const EXTENSION_NAME = "pi-pi-experts";
 
 // Safely extract a human-readable message from a Promise rejection reason
 // without resorting to `any`.
@@ -205,15 +211,8 @@ export default function (pi: ExtensionAPI) {
 		const truncate = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 3)}...` : s);
 
 		const statusColor =
-			state.status === "idle"
-				? "dim"
-				: state.status === "researching"
-					? "accent"
-					: state.status === "done"
-						? "success"
-						: "error";
-		const statusIcon =
-			state.status === "idle" ? "○" : state.status === "researching" ? "◉" : state.status === "done" ? "✓" : "✗";
+			state.status === "idle" ? "dim" : state.status === "researching" ? "accent" : state.status === "done" ? "success" : "error";
+		const statusIcon = state.status === "idle" ? "○" : state.status === "researching" ? "◉" : state.status === "done" ? "✓" : "✗";
 
 		const name = displayName(state.def.name);
 		const nameStr = theme.fg("accent", theme.bold(truncate(name, w)));
@@ -358,24 +357,9 @@ export default function (pi: ExtensionAPI) {
 			state.def.tools,
 			"--thinking",
 			"off",
-			// Use --system-prompt (REPLACE the default) rather than
-			// --append-system-prompt (PREPEND pi's default).
-			//
-			// pi's default coding-assistant prompt contains three phrases
-			// ("pi itself", "pi packages", "pi .md") that Anthropic's Claude
-			// Code OAuth endpoint treats as an identity-check failure and
-			// rejects with HTTP 400 (empty body) — which pi's provider then
-			// silently swallows as an empty assistant message (exit 0, usage 0).
-			//
-			// `pi-claude-code-use` rewrites those phrases on the parent process
-			// via `before_provider_request`, but `--no-extensions` keeps the
-			// subprocess isolated (so it can't recursively load this extension
-			// or anything else), which means `pi-claude-code-use` does not run
-			// in the child either. Replacing pi's default with the expert's
-			// own prompt avoids the trigger phrases entirely and works for both
-			// OAuth and raw API-key auth.
-			"--system-prompt",
+			"--append-system-prompt",
 			state.def.systemPrompt,
+			...loadSubagentExtraArgs(EXTENSION_NAME, ctx.cwd),
 			question,
 		];
 
@@ -444,6 +428,8 @@ export default function (pi: ExtensionAPI) {
 
 				ctx.ui.notify(
 					`${displayName(state.def.name)} ${state.status} in ${Math.round(state.elapsed / 1000)}s`,
+					// Note: upstream pi-pi.ts uses "success" here, but @earendil-works/pi-coding-agent
+					// removed that level from notify(); accepted values are "error" | "warning" | "info".
 					state.status === "done" ? "info" : "error",
 				);
 
@@ -595,11 +581,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 
 			if (options.isPartial || details.status === "researching") {
 				const count = details.queries?.length ?? "?";
-				return new Text(
-					theme.fg("accent", `◉ ${count} experts`) + theme.fg("dim", " researching in parallel..."),
-					0,
-					0,
-				);
+				return new Text(theme.fg("accent", `◉ ${count} experts`) + theme.fg("dim", " researching in parallel..."), 0, 0);
 			}
 
 			const lines = details.results.map((r) => {
@@ -684,15 +666,11 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 		return { systemPrompt };
 	});
 
-	// ── Session Start ────────────────────────────
-
 	// Eager initialization: populate the experts map at factory time so that
-	// (a) tool calls work the instant `registerTool` returns, no race with
-	//     `session_start`, and
-	// (b) consumers that re-load this extension via jiti capture shims (e.g.
-	//     pi-claude-code-use's MCP-alias registration) get a fully-populated
-	//     `experts` map even though their shim swallows `pi.on(...)` calls.
+	// (a) tool calls work the instant `registerTool` returns, no race with `session_start`
 	loadExperts();
+
+	// ── Session Start ────────────────────────────
 
 	pi.on("session_start", async (_event, _ctx) => {
 		if (widgetCtx) {
@@ -730,11 +708,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 
 				const left = theme.fg("dim", ` ${model}`) + theme.fg("muted", " · ") + theme.fg("accent", "Pi Pi");
 				const mid =
-					active > 0
-						? theme.fg("accent", ` ◉ ${active} researching`)
-						: done > 0
-							? theme.fg("success", ` ✓ ${done} done`)
-							: "";
+					active > 0 ? theme.fg("accent", ` ◉ ${active} researching`) : done > 0 ? theme.fg("success", ` ✓ ${done} done`) : "";
 				const right = theme.fg("dim", `[${bar}] ${Math.round(pct)}% `);
 				const pad = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(mid) - visibleWidth(right)));
 

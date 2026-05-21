@@ -9,5 +9,10 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/extensions/**/*.ts", "packages/*/__tests__/**/*.ts"]
+  "include": [
+    "packages/*/extensions/**/*.ts",
+    "packages/*/__tests__/**/*.ts",
+    "libraries/*/src/**/*.ts",
+    "libraries/*/__tests__/**/*.ts"
+  ]
 }

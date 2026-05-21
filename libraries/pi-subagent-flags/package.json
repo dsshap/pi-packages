@@ -1,0 +1,31 @@
+{
+	"name": "@dsshap/pi-subagent-flags",
+	"version": "1.0.0",
+	"description": "Internal helper library for Pi extensions — reads ~/.pi/agent/subagent-flags.json so local users can splice extra `pi` flags into sub-agent subprocess spawns. Not a Pi extension; consumed as a transitive npm dependency.",
+	"keywords": [
+		"pi-helpers",
+		"pi-subagent",
+		"internal"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"types": "./src/index.ts",
+	"files": [
+		"src/",
+		"README.md",
+		"LICENSE"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dsshap/pi-packages.git",
+		"directory": "libraries/pi-subagent-flags"
+	},
+	"author": "dsshap",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/dsshap/pi-packages/issues"
+	},
+	"homepage": "https://github.com/dsshap/pi-packages/tree/main/libraries/pi-subagent-flags#readme"
+}

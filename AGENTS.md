@@ -1,12 +1,19 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- This repo is an npm workspace with independent packages in `packages/*`.
-- Each package follows a consistent layout:
+- This repo is an npm workspace with two top-level workspace globs:
+  - `packages/*` — Pi extensions (publish to npm, end users install via `pi install`).
+  - `libraries/*` — internal-utility npm packages consumed by the extensions. Not Pi extensions; pulled in transitively as runtime dependencies. Do not install with `pi install`.
+- Each **package** (Pi extension) follows a consistent layout:
   - `extensions/index.ts` for the pi extension entry point.
   - `__tests__/` for Vitest tests (e.g., `index.test.ts`).
   - `README.md`, `package.json`, and `LICENSE` per package.
   - Optional bundled assets (e.g., `agents/`, `skills/`, `themes/`) shipped alongside the extension.
+- Each **library** (internal helper) follows a simpler layout:
+  - `src/index.ts` for the library source.
+  - `__tests__/` for Vitest tests.
+  - `README.md`, `package.json`, and `LICENSE`.
+  - `package.json` `exports` field points at `./src/index.ts` (no build step — consumed by Pi extensions which are loaded via jiti).
 - Root-level configs live in `biome.json`, `tsconfig.json`, and `vitest.config.ts`.
 
 ## Build, Test, and Development Commands
@@ -30,7 +37,7 @@ Local package testing:
 
 ## Testing Guidelines
 - Framework: Vitest (see `vitest.config.ts`).
-- Tests are per-package under `packages/*/__tests__/`.
+- Tests are per-package/library under `packages/*/__tests__/` and `libraries/*/__tests__/`.
 - Keep unit tests focused on extension behavior and helpers; prefer fast, isolated tests.
 
 ## Commit & Pull Request Guidelines

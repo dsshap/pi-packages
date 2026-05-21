@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "libraries/*"
   ],
   "keywords": [
     "pi",

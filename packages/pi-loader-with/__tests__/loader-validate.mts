@@ -4,7 +4,7 @@
  * fixture extension via jiti and routes calls through the passthrough shim.
  *
  * Run from repo root:
- *   npx tsx packages/pi-extension-resources/__tests__/loader-validate.mts
+ *   npx tsx packages/pi-loader-with/__tests__/loader-validate.mts
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -20,11 +20,24 @@ const pkgRoot = resolve(here, "..");
 function createFixtureWithPackageJson(root: string, name: string): string {
 	const dir = join(root, name);
 	mkdirSync(join(dir, "extensions"), { recursive: true });
+	mkdirSync(join(dir, "prompts"), { recursive: true });
+	mkdirSync(join(dir, "skills", "sample"), { recursive: true });
 
-	// package.json pointing at ./extensions/index.ts
+	// package.json pointing at ./extensions/index.ts and declaring resources
 	writeFileSync(
 		join(dir, "package.json"),
-		JSON.stringify({ name, pi: { extensions: ["./extensions/index.ts"] } }, null, 2),
+		JSON.stringify(
+			{
+				name,
+				pi: {
+					extensions: ["./extensions/index.ts"],
+					prompts: ["./prompts"],
+					skills: ["./skills"],
+				},
+			},
+			null,
+			2,
+		),
 	);
 
 	// Extension entry — uses `typebox` to exercise the virtual-module wiring
@@ -177,6 +190,21 @@ try {
 		calls1.on?.some((c) => c.args[0] === "session_start"),
 		JSON.stringify(calls1.on),
 	);
+	assert(
+		"manifest promptPaths surfaced",
+		result1.ok === true && Array.isArray((result1 as any).promptPaths) && (result1 as any).promptPaths.length === 1,
+		JSON.stringify(result1),
+	);
+	assert(
+		"manifest skillPaths surfaced",
+		result1.ok === true && Array.isArray((result1 as any).skillPaths) && (result1 as any).skillPaths.length === 1,
+		JSON.stringify(result1),
+	);
+	assert(
+		"manifest promptPaths absolute & point at ./prompts",
+		result1.ok === true && (result1 as any).promptPaths[0] === join(fix1, "prompts"),
+		JSON.stringify((result1 as any).promptPaths),
+	);
 
 	// ── Test 2: buildPassthroughShim delegates to real pi ─────────────────
 	console.log("\n── Test 2: buildPassthroughShim ──");
@@ -204,6 +232,13 @@ try {
 		// biome-ignore lint/suspicious/noExplicitAny: test driver
 		calls3.registerTool?.some((c) => (c.args[0] as any)?.name === "fallback_tool"),
 		JSON.stringify(calls3.registerTool),
+	);
+	assert(
+		"no-package.json bundle yields empty promptPaths/skillPaths",
+		result2.ok === true &&
+			(result2 as any).promptPaths?.length === 0 &&
+			(result2 as any).skillPaths?.length === 0,
+		JSON.stringify(result2),
 	);
 
 	// ── Test 4: non-existent bundle → ok: false ───────────────────────────

@@ -3,6 +3,7 @@
  *
  * Provides:
  *  - getJitiLoader()          — lazy singleton jiti instance with virtualModules
+ *  - readManifest()           — parse package.json and resolve manifest paths
  *  - loadFactory()            — resolve the entry point and import the factory fn
  *  - buildPassthroughShim()   — create a full-passthrough ExtensionAPI wrapper
  *  - loadAndRunExtension()    — orchestrate load + run for one bundle path
@@ -122,6 +123,49 @@ export function getJitiLoader(): ReturnType<typeof createJiti> {
 	return _jiti;
 }
 
+// ── readManifest ──────────────────────────────────────────────────────────
+
+export interface PiManifest {
+	extensions: string[];
+	promptPaths: string[];
+	skillPaths: string[];
+}
+
+/** Coerce a `string | string[] | undefined` manifest field into a string[]. */
+function toArray(raw: unknown): string[] {
+	if (typeof raw === "string") return raw.length > 0 ? [raw] : [];
+	if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+	return [];
+}
+
+/**
+ * Read `<bundle>/package.json` and resolve the `pi.extensions`, `pi.prompts`,
+ * and `pi.skills` manifest fields into absolute paths.
+ *
+ * Accepts both string and string[] forms for `prompts`/`skills`. Returns an
+ * empty manifest if there is no `package.json`, or it can't be parsed.
+ */
+export function readManifest(bundlePath: string): PiManifest {
+	const absBundle = resolve(bundlePath);
+	const empty: PiManifest = { extensions: [], promptPaths: [], skillPaths: [] };
+	const pkgJsonPath = join(absBundle, "package.json");
+	if (!existsSync(pkgJsonPath)) return empty;
+	try {
+		const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as {
+			pi?: { extensions?: unknown; prompts?: unknown; skills?: unknown };
+		};
+		const pi = pkg?.pi;
+		const resolveRel = (p: string) => resolve(absBundle, p);
+		return {
+			extensions: toArray(pi?.extensions).map(resolveRel),
+			promptPaths: toArray(pi?.prompts).map(resolveRel),
+			skillPaths: toArray(pi?.skills).map(resolveRel),
+		};
+	} catch {
+		return empty;
+	}
+}
+
 // ── loadFactory ───────────────────────────────────────────────────────────
 
 const FALLBACK_ENTRIES = ["index.ts", "extensions/index.ts", "extensions/index.js", "index.js"];
@@ -129,6 +173,7 @@ const FALLBACK_ENTRIES = ["index.ts", "extensions/index.ts", "extensions/index.j
 export interface LoadFactoryResult {
 	factory: ExtensionFactory;
 	entryPath: string;
+	manifest: PiManifest;
 }
 
 /**
@@ -139,39 +184,26 @@ export interface LoadFactoryResult {
  *  2. Fallback list: index.ts, extensions/index.ts, extensions/index.js, index.js
  *
  * Returns undefined if no factory is found (all candidates tried).
+ * On success, the resolved `PiManifest` (including any `pi.prompts` /
+ * `pi.skills` paths) is included for the caller to contribute to Pi's
+ * resource discovery.
  */
 export async function loadFactory(bundlePath: string): Promise<LoadFactoryResult | undefined> {
 	const loader = getJitiLoader();
 	const absBundle = resolve(bundlePath);
+	const manifest = readManifest(absBundle);
 
 	// Collect candidate entry paths in priority order.
 	const candidates: string[] = [];
-
-	const pkgJsonPath = join(absBundle, "package.json");
-	if (existsSync(pkgJsonPath)) {
-		try {
-			const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as {
-				pi?: { extensions?: string[] };
-			};
-			const declared = pkg?.pi?.extensions?.[0];
-			if (declared) {
-				candidates.push(resolve(absBundle, declared));
-			}
-		} catch {
-			// ignore parse errors, fall through to fallbacks
-		}
-	}
-
-	for (const rel of FALLBACK_ENTRIES) {
-		candidates.push(join(absBundle, rel));
-	}
+	if (manifest.extensions[0]) candidates.push(manifest.extensions[0]);
+	for (const rel of FALLBACK_ENTRIES) candidates.push(join(absBundle, rel));
 
 	for (const candidate of candidates) {
 		if (!existsSync(candidate)) continue;
 		try {
 			const mod = await loader.import(candidate, { default: true });
 			if (typeof mod === "function") {
-				return { factory: mod as ExtensionFactory, entryPath: candidate };
+				return { factory: mod as ExtensionFactory, entryPath: candidate, manifest };
 			}
 		} catch {
 			// try next candidate
@@ -219,11 +251,17 @@ export function buildPassthroughShim(realPi: ExtensionAPI): ExtensionAPI {
 
 // ── loadAndRunExtension ───────────────────────────────────────────────────
 
-export type LoadAndRunResult = { ok: true; entryPath: string } | { ok: false; error: string };
+export type LoadAndRunResult =
+	| { ok: true; entryPath: string; promptPaths: string[]; skillPaths: string[] }
+	| { ok: false; error: string };
 
 /**
  * Load and immediately run one extension by bundle path.
  * All errors are caught and returned as `{ ok: false, error }` — never thrown.
+ *
+ * On success returns the absolute `promptPaths` / `skillPaths` declared in the
+ * package's `pi.prompts` / `pi.skills` manifest, so the caller can contribute
+ * them to Pi's resource discovery.
  */
 export async function loadAndRunExtension(bundlePath: string, realPi: ExtensionAPI): Promise<LoadAndRunResult> {
 	try {
@@ -233,7 +271,12 @@ export async function loadAndRunExtension(bundlePath: string, realPi: ExtensionA
 		}
 		const shim = buildPassthroughShim(realPi);
 		await found.factory(shim);
-		return { ok: true, entryPath: found.entryPath };
+		return {
+			ok: true,
+			entryPath: found.entryPath,
+			promptPaths: found.manifest.promptPaths,
+			skillPaths: found.manifest.skillPaths,
+		};
 	} catch (e) {
 		return {
 			ok: false,

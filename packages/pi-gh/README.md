@@ -27,24 +27,6 @@ cd packages/pi-gh
 pi -e .
 ```
 
-## Required companion: `@dsshap/pi-extension-resources`
-
-The prompts (`/pr`, `/triage-pr-feedback`) live in the `prompts/` folder of this package. Pi does **not** auto-scan extension packages for prompts — you need `@dsshap/pi-extension-resources` loaded alongside this package for them to be discovered.
-
-Without it, `/gh` still works (diagnostics only), but the prompt commands won't appear.
-
-Load both together:
-
-```bash
-pi -e packages/pi-extension-resources -e packages/pi-gh
-```
-
-Or once installed:
-
-```bash
-pi  # with both listed in your settings.json extensions / packages
-```
-
 ## Prompts
 
 | Command | Argument | Purpose |

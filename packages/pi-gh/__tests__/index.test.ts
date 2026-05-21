@@ -110,7 +110,7 @@ describe("classifyGhAuthOutput", () => {
 // ── formatGhStatusMessage ─────────────────────────────────────────────────
 
 describe("formatGhStatusMessage", () => {
-	it("always includes both prompt names and pi-extension-resources in the output", () => {
+	it("always includes both prompt names in the output", () => {
 		const statuses: GhStatus[] = [
 			{ kind: "missing" },
 			{ kind: "unauthenticated", detail: "not logged in" },
@@ -121,7 +121,6 @@ describe("formatGhStatusMessage", () => {
 			const msg = formatGhStatusMessage(status);
 			expect(msg).toContain("/pr");
 			expect(msg).toContain("/triage-pr-feedback");
-			expect(msg).toContain("pi-extension-resources");
 		}
 	});
 });

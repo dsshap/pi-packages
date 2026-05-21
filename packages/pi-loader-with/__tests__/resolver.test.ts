@@ -120,15 +120,15 @@ describe("configSearchPaths", () => {
 	it("returns only the global path when env var is unset", () => {
 		const home = "/fake/home";
 		const paths = configSearchPaths({}, home);
-		expect(paths).toEqual([join(home, ".pi", "agent", "extensions", "pi-extension-resources.json")]);
+		expect(paths).toEqual([join(home, ".pi", "agent", "extensions", "pi-loader-with.json")]);
 	});
 
 	it("puts the env path first when set", () => {
 		const home = "/fake/home";
-		const env = { PI_EXTENSION_RESOURCES_CONFIG: "/custom/config.json" };
+		const env = { PI_LOADER_WITH_CONFIG: "/custom/config.json" };
 		const paths = configSearchPaths(env, home);
 		expect(paths[0]).toBe("/custom/config.json");
-		expect(paths[1]).toBe(join(home, ".pi", "agent", "extensions", "pi-extension-resources.json"));
+		expect(paths[1]).toBe(join(home, ".pi", "agent", "extensions", "pi-loader-with.json"));
 	});
 });
 

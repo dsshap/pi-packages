@@ -1,16 +1,15 @@
 {
-	"name": "@dsshap/pi-extension-resources",
-	"version": "1.0.0",
-	"description": "Pi Extension Resources — auto-loads the prompts/ and skills/ folders shipped alongside any loaded Pi extension package.",
+	"name": "@dsshap/pi-loader-with",
+	"version": "2.0.0",
+	"description": "Pi --with loader — load Pi extensions by short name and honor their pi.prompts / pi.skills manifest entries.",
 	"keywords": [
 		"pi",
 		"pi-package",
 		"pi-extension",
 		"pi-coding-agent",
-		"prompts",
-		"skills",
-		"resources",
-		"companions"
+		"loader",
+		"with",
+		"shortname"
 	],
 	"type": "module",
 	"files": [
@@ -32,12 +31,12 @@
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/dsshap/pi-packages.git",
-		"directory": "packages/pi-extension-resources"
+		"directory": "packages/pi-loader-with"
 	},
 	"author": "dsshap",
 	"license": "MIT",
 	"bugs": {
 		"url": "https://github.com/dsshap/pi-packages/issues"
 	},
-	"homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-extension-resources#readme"
+	"homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-loader-with#readme"
 }

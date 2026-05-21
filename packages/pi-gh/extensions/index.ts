@@ -47,9 +47,7 @@ export function classifyGhAuthOutput(opts: { error: NodeJS.ErrnoException | null
 const PROMPTS_FOOTER = `
 This package ships prompts:
   • /pr — open a PR for the current branch
-  • /triage-pr-feedback <pr-number> — triage feedback on a PR you own
-
-Note: prompt discovery requires @dsshap/pi-extension-resources to be loaded.`.trimStart();
+  • /triage-pr-feedback <pr-number> — triage feedback on a PR you own`.trimStart();
 
 /**
  * Format a human-readable message for each GhStatus kind.

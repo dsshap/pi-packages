@@ -10,7 +10,6 @@
  *
  * Commands:
  *   /experts          — list available experts and their status
- *   /experts-grid N   — set dashboard column count (default 3)
  *
  * Usage: pi -e .
  *
@@ -55,7 +54,24 @@ interface ExpertState {
 	elapsed: number;
 	lastLine: string;
 	queryCount: number;
+	// Cumulative USD across every query this expert has answered in this session.
+	// Sourced from `message_end` events' `message.usage.cost.total` field.
+	costUsd: number;
 	timer?: ReturnType<typeof setInterval>;
+}
+
+// Subset of pi-ai's `AssistantMessage` shape we read from the JSON event stream.
+// See pi-mono/packages/ai/src/types.ts (Usage + AssistantMessage).
+interface AssistantMessageLike {
+	role?: string;
+	model?: string;
+	usage?: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+		cost?: { total?: number };
+	};
 }
 
 // Shape of the `query_experts` tool args and result.details. Kept here so
@@ -137,33 +153,50 @@ function parseAgentFile(filePath: string): ExpertDef | null {
 	}
 }
 
-// ── Expert card colors ────────────────────────────
-// Each expert gets a unique hue: bg fills the card interior,
-// br is the matching border foreground (brighter shade of same hue).
-const EXPERT_COLORS: Record<string, { bg: string; br: string }> = {
-	"agent-expert": { bg: "\x1b[48;2;20;30;75m", br: "\x1b[38;2;70;110;210m" }, // navy
-	"config-expert": { bg: "\x1b[48;2;18;65;30m", br: "\x1b[38;2;55;175;90m" }, // forest
-	"ext-expert": { bg: "\x1b[48;2;80;18;28m", br: "\x1b[38;2;210;65;85m" }, // crimson
-	"keybinding-expert": { bg: "\x1b[48;2;50;22;85m", br: "\x1b[38;2;145;80;220m" }, // violet
-	"prompt-expert": { bg: "\x1b[48;2;80;55;12m", br: "\x1b[38;2;215;150;40m" }, // amber
-	"skill-expert": { bg: "\x1b[48;2;12;65;75m", br: "\x1b[38;2;40;175;195m" }, // teal
-	"theme-expert": { bg: "\x1b[48;2;80;18;62m", br: "\x1b[38;2;210;55;160m" }, // rose
-	"tui-expert": { bg: "\x1b[48;2;28;42;80m", br: "\x1b[38;2;85;120;210m" }, // slate
-	"cli-expert": { bg: "\x1b[48;2;60;80;20m", br: "\x1b[38;2;160;210;55m" }, // olive/lime
-};
-const FG_RESET = "\x1b[39m";
-const BG_RESET = "\x1b[49m";
+// Formatters reused inside the widget rebuild. Private to this file — per
+// repo convention, extensions opt-in by copying these snippets rather than
+// coupling to a shared display module.
+
+function shortSessionId(uuid: string | undefined | null): string {
+	if (!uuid) return "";
+	return uuid.replace(/-/g, "").slice(0, 12);
+}
+
+function formatCost(usd: number): string {
+	if (!Number.isFinite(usd) || usd <= 0) return "$0.000";
+	return `$${usd.toFixed(3)}`;
+}
+
+function formatElapsed(ms: number): string {
+	if (!Number.isFinite(ms) || ms <= 0) return "0s";
+	const totalSec = Math.round(ms / 1000);
+	const m = Math.floor(totalSec / 60);
+	const s = totalSec % 60;
+	if (m === 0) return `${s}s`;
+	return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function padCell(styled: string, width: number, align: "left" | "right" = "left"): string {
+	const w = visibleWidth(styled);
+	if (w >= width) return truncateToWidth(styled, width);
+	const pad = " ".repeat(width - w);
+	return align === "left" ? styled + pad : pad + styled;
+}
 
 // ── Extension ────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
 	const experts: Map<string, ExpertState> = new Map();
-	let gridCols = 3;
 	// Captured from whichever context first activates the widget — both
 	// command handlers (ExtensionCommandContext) and event handlers like
 	// session_start (ExtensionContext) flow through here, so we widen to the
 	// common base type that both extend.
 	let widgetCtx: ExtensionContext | undefined;
+	// `pushUpdate` is assigned by the widget factory on mount. Calling it from
+	// async code (queryExpert's stdout handler, the per-expert 1Hz timer) is
+	// what tells Pi to repaint. Without this, `setWidget` calls don't trigger
+	// a re-render — Pi's render loop is demand-driven via `tui.requestRender()`.
+	let pushUpdate: (() => void) | null = null;
 
 	// Agents ship bundled inside this package, alongside the extension file.
 	const PI_PI_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "agents");
@@ -197,6 +230,7 @@ export default function (pi: ExtensionAPI) {
 							elapsed: 0,
 							lastLine: "",
 							queryCount: 0,
+							costUsd: 0,
 						});
 					}
 				}
@@ -204,101 +238,139 @@ export default function (pi: ExtensionAPI) {
 		} catch {}
 	}
 
-	// ── Grid Rendering ───────────────────────────
+	function statusBullet(status: ExpertState["status"], theme: Theme): string {
+		switch (status) {
+			case "idle":
+				return theme.fg("dim", "◇");
+			case "researching":
+				return theme.fg("accent", "◆");
+			case "done":
+				return theme.fg("success", "◆");
+			case "error":
+				return theme.fg("error", "◆");
+		}
+	}
 
-	function renderCard(state: ExpertState, colWidth: number, theme: Theme): string[] {
-		const w = colWidth - 2;
-		const truncate = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 3)}...` : s);
-
-		const statusColor =
-			state.status === "idle" ? "dim" : state.status === "researching" ? "accent" : state.status === "done" ? "success" : "error";
-		const statusIcon = state.status === "idle" ? "○" : state.status === "researching" ? "◉" : state.status === "done" ? "✓" : "✗";
-
-		const name = displayName(state.def.name);
-		const nameStr = theme.fg("accent", theme.bold(truncate(name, w)));
-		const nameVisible = Math.min(name.length, w);
-
-		const statusStr = `${statusIcon} ${state.status}`;
-		const timeStr = state.status !== "idle" ? ` ${Math.round(state.elapsed / 1000)}s` : "";
-		const queriesStr = state.queryCount > 0 ? ` (${state.queryCount})` : "";
-		const statusLine = theme.fg(statusColor, statusStr + timeStr + queriesStr);
-		const statusVisible = statusStr.length + timeStr.length + queriesStr.length;
-
-		const workRaw = state.question || state.def.description;
-		const workText = truncate(workRaw, Math.min(50, w - 1));
-		const workLine = theme.fg("muted", workText);
-		const workVisible = workText.length;
-
-		const lastRaw = state.lastLine || "";
-		const lastText = truncate(lastRaw, Math.min(50, w - 1));
-		const lastLineRendered = lastText ? theme.fg("dim", lastText) : theme.fg("dim", "—");
-		const lastVisible = lastText ? lastText.length : 1;
-
-		const colors = EXPERT_COLORS[state.def.name];
-		const bg = colors?.bg ?? "";
-		const br = colors?.br ?? "";
-		const bgr = bg ? BG_RESET : "";
-		const fgr = br ? FG_RESET : "";
-
-		// br colors the box-drawing characters; bg fills behind them so the
-		// full card — top line, side bars, bottom line — is one solid block.
-		const bord = (s: string) => bg + br + s + bgr + fgr;
-
-		const top = `┌${"─".repeat(w)}┐`;
-		const bot = `└${"─".repeat(w)}┘`;
-
-		// bg fills the inner content area; re-applied before padding to ensure
-		// the full row is colored even if theme.fg uses a full ANSI reset inside.
-		const border = (content: string, visLen: number) => {
-			const pad = " ".repeat(Math.max(0, w - visLen));
-			return bord("│") + bg + content + bg + pad + bgr + bord("│");
-		};
-
-		return [
-			bord(top),
-			border(` ${nameStr}`, 1 + nameVisible),
-			border(` ${statusLine}`, 1 + statusVisible),
-			border(` ${workLine}`, 1 + workVisible),
-			border(` ${lastLineRendered}`, 1 + lastVisible),
-			bord(bot),
-		];
+	function statusColor(status: ExpertState["status"]): "dim" | "accent" | "success" | "error" {
+		return status === "idle" ? "dim" : status === "researching" ? "accent" : status === "done" ? "success" : "error";
 	}
 
 	function updateWidget() {
+		pushUpdate?.();
+	}
+
+	function mountWidget() {
 		if (!widgetCtx) return;
 
-		widgetCtx.ui.setWidget("pi-pi-grid", (_tui: TUI, theme: Theme) => {
+		widgetCtx.ui.setWidget("pi-pi", (tui: TUI, theme: Theme) => {
+			const text = new Text("", 0, 1);
+			// Cached terminal width — captured every time Pi calls render(width),
+			// so async repaints triggered by `pushUpdate()` can use the same width
+			// without waiting for the next render() call to thread it through.
+			let lastWidth = 80;
+
+			const rebuild = (width: number): void => {
+				if (experts.size === 0) {
+					text.setText(theme.fg("dim", `  No experts found. Add agent .md files to ${PI_PI_AGENTS_DIR}/`));
+					return;
+				}
+
+				const all = Array.from(experts.values());
+
+				// ── Column widths driven by data ──
+				const labelWidth = Math.max(...all.map((s) => visibleWidth(`\u25c6 ${displayName(s.def.name)}`)));
+
+				const statusTexts = all.map((s) => {
+					const q = s.queryCount > 0 ? ` \u00b7 ${s.queryCount}q` : "";
+					return `${s.status}${q}`;
+				});
+				const statusWidth = Math.max(...statusTexts.map((t) => t.length), 1);
+
+				const costStrings = all.map((s) => formatCost(s.costUsd));
+				const costWidth = Math.max(...costStrings.map((c) => c.length));
+
+				const elapsedStrings = all.map((s) => (s.status === "idle" ? "" : formatElapsed(s.elapsed)));
+				const elapsedWidth = Math.max(...elapsedStrings.map((e) => e.length), 1);
+
+				const GAP = "  ";
+				// Width reserved by everything left of the description column.
+				const reserved = labelWidth + GAP.length + statusWidth + GAP.length + costWidth + GAP.length + elapsedWidth + GAP.length;
+				const descWidth = Math.max(20, width - reserved);
+
+				const truncate = (s: string, max: number) => (s.length > max ? `${s.slice(0, Math.max(0, max - 1))}\u2026` : s);
+
+				// ── Header: Pi Pi │ short-session │ counters ──
+				const sessionShort = widgetCtx ? shortSessionId(widgetCtx.sessionManager?.getSessionId?.()) : "";
+				const activeCount = all.filter((s) => s.status === "researching").length;
+				const totalQueries = all.reduce((a, s) => a + s.queryCount, 0);
+				const totalCost = all.reduce((a, s) => a + s.costUsd, 0);
+				const counterParts: string[] = [`${all.length} experts`];
+				if (activeCount > 0) counterParts.push(`${activeCount} active`);
+				if (totalCost > 0) counterParts.push(formatCost(totalCost));
+				if (totalQueries > 0) counterParts.push(`${totalQueries} queries`);
+				const counters = counterParts.join(" \u00b7 ");
+
+				const sep = theme.fg("muted", " \u2502 ");
+				const headerPieces: string[] = [theme.fg("accent", theme.bold("Pi Pi"))];
+				if (sessionShort) headerPieces.push(theme.fg("dim", sessionShort));
+				headerPieces.push(theme.fg("dim", counters));
+				const header = headerPieces.join(sep);
+
+				// ── Row builder ──
+				const buildRow = (s: ExpertState, statusText: string, costText: string, elapsedText: string): string => {
+					const name = displayName(s.def.name);
+					const rawLabel = `\u25c6 ${name}`;
+					const styledLabel = statusBullet(s.status, theme) + " " + theme.fg("accent", theme.bold(name));
+					const labelCell = styledLabel + " ".repeat(Math.max(0, labelWidth - visibleWidth(rawLabel)));
+
+					const statusCell = padCell(theme.fg(statusColor(s.status), statusText), statusWidth);
+					const costCell = padCell(theme.fg("warning", costText), costWidth, "right");
+					const elapsedCell = elapsedText
+						? padCell(theme.fg("dim", elapsedText), elapsedWidth, "right")
+						: " ".repeat(elapsedWidth);
+
+					// Description column doubles as a live work view:
+					//   idle   → static .md frontmatter description (gives context per expert)
+					//   other  → last meaningful line of streamed assistant text from
+					//            the spawned subprocess (state.lastLine), falling back to
+					//            the static description if the child hasn't streamed yet.
+					const rawDesc = s.status === "idle" ? s.def.description : s.lastLine || s.def.description;
+					const descText = truncate(rawDesc || "", descWidth);
+					// Slightly dim the live-work view so the eye picks up the static
+					// description rows (idle, contextual) vs. the working rows.
+					const descColor: "muted" | "dim" = s.status === "researching" && s.lastLine ? "dim" : "muted";
+					const descCell = theme.fg(descColor, descText);
+
+					return [labelCell, statusCell, costCell, elapsedCell, descCell].join(GAP);
+				};
+
+				const lines: string[] = [];
+				lines.push(truncateToWidth(header, width));
+				all.forEach((s, i) => {
+					lines.push(truncateToWidth(buildRow(s, statusTexts[i], costStrings[i], elapsedStrings[i]), width));
+				});
+
+				text.setText(lines.join("\n"));
+			};
+
+			rebuild(lastWidth);
+
+			pushUpdate = () => {
+				rebuild(lastWidth);
+				text.invalidate();
+				tui.requestRender();
+			};
+
 			return {
 				render(width: number): string[] {
-					if (experts.size === 0) {
-						return ["", theme.fg("dim", `  No experts found. Add agent .md files to ${PI_PI_AGENTS_DIR}/`)];
-					}
-
-					const cols = Math.min(gridCols, experts.size);
-					const gap = 1;
-					// avoid Text component's ANSI-width miscounting by returning raw lines
-					const colWidth = Math.floor((width - gap * (cols - 1)) / cols) - 1;
-					const allExperts = Array.from(experts.values());
-
-					const lines: string[] = [""]; // top margin
-
-					for (let i = 0; i < allExperts.length; i += cols) {
-						const rowExperts = allExperts.slice(i, i + cols);
-						const cards = rowExperts.map((e) => renderCard(e, colWidth, theme));
-
-						while (cards.length < cols) {
-							cards.push(Array(6).fill(" ".repeat(colWidth)));
-						}
-
-						const cardHeight = cards[0].length;
-						for (let line = 0; line < cardHeight; line++) {
-							lines.push(cards.map((card) => card[line] || "").join(" ".repeat(gap)));
-						}
-					}
-
-					return lines;
+					lastWidth = width;
+					rebuild(width);
+					return text.render(width);
 				},
-				invalidate() {},
+				invalidate() {
+					rebuild(lastWidth);
+					text.invalidate();
+				},
 			};
 		});
 	}
@@ -374,6 +446,39 @@ export default function (pi: ExtensionAPI) {
 			let buffer = "";
 
 			proc.stdout?.setEncoding("utf-8");
+			// Each spawned `pi` emits a JSON event stream. We care about two:
+			//   - message_update with text_delta → streaming text for `state.lastLine`
+			//   - message_end (assistant) → final usage; accumulate `cost.total`
+			// See pi-mono/packages/ai/src/types.ts (Usage + AssistantMessage).
+			const handleEvent = (event: {
+				type?: string;
+				message?: AssistantMessageLike;
+				assistantMessageEvent?: { type?: string; delta?: string };
+			}) => {
+				if (event.type === "message_update") {
+					const delta = event.assistantMessageEvent;
+					if (delta?.type === "text_delta") {
+						textChunks.push(delta.delta || "");
+						const full = textChunks.join("");
+						const last =
+							full
+								.split("\n")
+								.filter((l: string) => l.trim())
+								.pop() || "";
+						state.lastLine = last;
+						updateWidget();
+					}
+					return;
+				}
+				if (event.type === "message_end" && event.message?.role === "assistant") {
+					const costTotal = Number(event.message.usage?.cost?.total) || 0;
+					if (costTotal > 0) {
+						state.costUsd += costTotal;
+						updateWidget();
+					}
+				}
+			};
+
 			proc.stdout?.on("data", (chunk: string) => {
 				buffer += chunk;
 				const lines = buffer.split("\n");
@@ -381,21 +486,7 @@ export default function (pi: ExtensionAPI) {
 				for (const line of lines) {
 					if (!line.trim()) continue;
 					try {
-						const event = JSON.parse(line);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") {
-								textChunks.push(delta.delta || "");
-								const full = textChunks.join("");
-								const last =
-									full
-										.split("\n")
-										.filter((l: string) => l.trim())
-										.pop() || "";
-								state.lastLine = last;
-								updateWidget();
-							}
-						}
+						handleEvent(JSON.parse(line));
 					} catch {}
 				}
 			});
@@ -406,11 +497,7 @@ export default function (pi: ExtensionAPI) {
 			proc.on("close", (code) => {
 				if (buffer.trim()) {
 					try {
-						const event = JSON.parse(buffer);
-						if (event.type === "message_update") {
-							const delta = event.assistantMessageEvent;
-							if (delta?.type === "text_delta") textChunks.push(delta.delta || "");
-						}
+						handleEvent(JSON.parse(buffer));
 					} catch {}
 				}
 
@@ -454,6 +541,20 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// Eager initialization: populate the experts map at factory time so that
+	//   (a) the `query_experts` tool description below can list every bundled
+	//       expert (avoiding the drift bug where a hardcoded list omitted
+	//       newly-added experts the model never learned about), and
+	//   (b) tool calls work the instant `registerTool` returns — no race with
+	//       `session_start`.
+	loadExperts();
+
+	// Build the LLM-facing description dynamically from the loaded experts so
+	// adding/removing a bundled `.md` file auto-syncs the tool definition.
+	const expertList = Array.from(experts.values())
+		.map((s) => `- ${s.def.name}: ${s.def.description}`)
+		.join("\n");
+
 	// ── query_experts Tool (parallel) ───────────
 
 	pi.registerTool({
@@ -464,14 +565,7 @@ export default function (pi: ExtensionAPI) {
 Pass an array of queries — each with an expert name and a specific question. All experts start at the same time and their results are returned together.
 
 Available experts:
-- ext-expert: Extensions — tools, events, commands, rendering, state management
-- theme-expert: Themes — JSON format, 51 color tokens, vars, color values
-- skill-expert: Skills — SKILL.md multi-file packages, scripts, references, frontmatter
-- config-expert: Settings — settings.json, providers, models, packages, keybindings
-- tui-expert: TUI — components, keyboard input, overlays, widgets, footers, editors
-- prompt-expert: Prompt templates — single-file .md commands, arguments ($1, $@)
-- agent-expert: Agent definitions — .md personas, tools, teams.yaml, orchestration
-- keybinding-expert: Keyboard shortcuts — registerShortcut(), Key IDs, reserved keys, macOS terminal compatibility
+${expertList}
 
 Ask specific questions about what you need to BUILD. Each expert will return documentation excerpts, code patterns, and implementation guidance.`,
 
@@ -622,21 +716,6 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 		},
 	});
 
-	pi.registerCommand("experts-grid", {
-		description: "Set expert grid columns: /experts-grid <1-5>",
-		handler: async (args, _ctx) => {
-			widgetCtx = _ctx;
-			const n = parseInt(args?.trim() || "", 10);
-			if (n >= 1 && n <= 5) {
-				gridCols = n;
-				_ctx.ui.notify(`Grid set to ${gridCols} columns`, "info");
-				updateWidget();
-			} else {
-				_ctx.ui.notify("Usage: /experts-grid <1-5>", "error");
-			}
-		},
-	});
-
 	// ── System Prompt ────────────────────────────
 
 	pi.on("before_agent_start", async (_event, _ctx) => {
@@ -666,19 +745,20 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 		return { systemPrompt };
 	});
 
-	// Eager initialization: populate the experts map at factory time so that
-	// (a) tool calls work the instant `registerTool` returns, no race with `session_start`
-	loadExperts();
-
 	// ── Session Start ────────────────────────────
 
 	pi.on("session_start", async (_event, _ctx) => {
 		if (widgetCtx) {
-			widgetCtx.ui.setWidget("pi-pi-grid", undefined);
+			widgetCtx.ui.setWidget("pi-pi", undefined);
 		}
+		// Drop the stale closure that pointed at the previous ctx's tui.
+		pushUpdate = null;
 		widgetCtx = _ctx;
 
-		updateWidget();
+		// Mount the widget ONCE per session ctx. Subsequent state changes call
+		// `pushUpdate()` (via `updateWidget()`) which invalidates + requests a
+		// render — the demand-driven repaint Pi's TUI expects.
+		mountWidget();
 
 		const expertNames = Array.from(experts.values())
 			.map((s) => displayName(s.def.name))
@@ -686,8 +766,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 		_ctx.ui.setStatus("pi-pi", `Pi Pi (${experts.size} experts)`);
 		_ctx.ui.notify(
 			`Pi Pi loaded — ${experts.size} experts: ${expertNames}\n\n` +
-				`/experts          List experts and status\n` +
-				`/experts-grid N   Set grid columns (1-5)\n\n` +
+				`/experts          List experts and status\n\n` +
 				`Ask me to build any Pi agent component!`,
 			"info",
 		);

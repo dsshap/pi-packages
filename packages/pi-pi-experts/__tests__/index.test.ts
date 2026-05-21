@@ -28,11 +28,50 @@ describe("@dsshap/pi-pi-experts package layout", () => {
 		expect(src).toContain("import.meta.url");
 	});
 
-	it("registers the query_experts tool and pi-pi commands", () => {
+	it("registers the query_experts tool and the /experts command", () => {
 		const src = readFileSync(extEntry, "utf-8");
 		expect(src).toMatch(/registerTool\(\s*\{\s*name:\s*"query_experts"/);
 		expect(src).toMatch(/registerCommand\("experts"/);
-		expect(src).toMatch(/registerCommand\("experts-grid"/);
+		// /experts-grid was removed when the layout switched from grid to tree.
+		expect(src).not.toMatch(/registerCommand\("experts-grid"/);
+		// Widget key was renamed from "pi-pi-grid" to "pi-pi" with the new layout.
+		expect(src).not.toMatch(/setWidget\("pi-pi-grid"/);
+		expect(src).toMatch(/setWidget\("pi-pi"/);
+	});
+
+	it("uses the mountWidget + pushUpdate pattern for live repaints", () => {
+		const src = readFileSync(extEntry, "utf-8");
+		expect(src).toMatch(/function mountWidget\(/);
+		expect(src).toMatch(/let pushUpdate: \(\(\) => void\) \| null = null/);
+		expect(src).toMatch(/tui\.requestRender\(\)/);
+	});
+
+	it("tracks per-expert costUsd from message_end usage events", () => {
+		const src = readFileSync(extEntry, "utf-8");
+		expect(src).toMatch(/costUsd:\s*number/);
+		expect(src).toMatch(/event\.type === "message_end"/);
+		expect(src).toMatch(/state\.costUsd \+=/);
+	});
+
+	it("description column shows live work (state.lastLine) once an expert is non-idle", () => {
+		const src = readFileSync(extEntry, "utf-8");
+		// idle → static description; otherwise → lastLine with description fallback.
+		expect(src).toMatch(/s\.status === "idle"\s*\?\s*s\.def\.description\s*:\s*s\.lastLine \|\| s\.def\.description/);
+	});
+
+	it("builds the query_experts tool description dynamically from the loaded experts", () => {
+		const src = readFileSync(extEntry, "utf-8");
+		// The list MUST be generated from the experts map at factory time so that
+		// adding a bundled `.md` agent doesn't require a parallel edit to the
+		// LLM-facing description (the bug that hid cli-expert from the model).
+		expect(src).toMatch(/const expertList = Array\.from\(experts\.values\(\)\)/);
+		expect(src).toMatch(/\$\{expertList\}/);
+		// loadExperts must run BEFORE registerTool so the map is populated when
+		// the description is built.
+		const loadCall = src.indexOf("loadExperts();");
+		const registerCall = src.indexOf("pi.registerTool({");
+		expect(loadCall).toBeGreaterThan(0);
+		expect(registerCall).toBeGreaterThan(loadCall);
 	});
 });
 

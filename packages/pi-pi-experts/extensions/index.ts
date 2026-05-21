@@ -718,7 +718,7 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 
 	// ── System Prompt ────────────────────────────
 
-	pi.on("before_agent_start", async (_event, _ctx) => {
+	pi.on("before_agent_start", async (event, _ctx) => {
 		const expertCatalog = Array.from(experts.values())
 			.map((s) => `### ${displayName(s.def.name)}\n**Query as:** \`${s.def.name}\`\n${s.def.description}`)
 			.join("\n\n");
@@ -742,7 +742,10 @@ Ask specific questions about what you need to BUILD. Each expert will return doc
 			systemPrompt = `Error: Could not load pi-orchestrator.md. Make sure it exists in ${PI_PI_AGENTS_DIR}/.`;
 		}
 
-		return { systemPrompt };
+		const base = event.systemPrompt ?? "";
+		return {
+			systemPrompt: base ? `${base}\n\n---\n\n${systemPrompt}` : systemPrompt,
+		};
 	});
 
 	// ── Session Start ────────────────────────────

@@ -1174,7 +1174,7 @@ export default function (pi: ExtensionAPI) {
 		await Promise.all(exits);
 	});
 
-	pi.on("before_agent_start", async (_event, _ctx) => {
+	pi.on("before_agent_start", async (event, _ctx) => {
 		// Force widget reset on first turn after /new
 		if (pendingReset && activeChain) {
 			pendingReset = false;
@@ -1227,8 +1227,8 @@ export default function (pi: ExtensionAPI) {
 			})
 			.join("\n\n");
 
-		return {
-			systemPrompt: `You are an agent with a sequential pipeline called "${activeChain.name}" at your disposal.${desc}
+		const base = event.systemPrompt ?? "";
+		const chainPrompt = `You are an agent with a sequential pipeline called "${activeChain.name}" at your disposal.${desc}
 You have full access to your own tools AND the run_chain tool to delegate to your team.
 
 ## Active Chain: ${activeChain.name}
@@ -1260,7 +1260,10 @@ ${agentCatalog}
 ## Guidelines
 - Use your judgment — if it's quick, just do it; if it's real work, run the chain
 - Keep chain tasks focused and clearly described
-- You can mix direct work and chain runs in the same conversation`,
+- You can mix direct work and chain runs in the same conversation`;
+
+		return {
+			systemPrompt: base ? `${base}\n\n---\n\n${chainPrompt}` : chainPrompt,
 		};
 	});
 

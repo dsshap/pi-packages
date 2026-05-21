@@ -11,7 +11,7 @@ import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 // Mirror helpers from extensions/index.ts
 const displayName = (n) =>
 	n.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-const shortSessionId = (u) => (u ? u.replace(/-/g, "").slice(0, 12) : "");
+const shortSessionId = (u) => (u ? u.slice(0, 13) : "");
 const formatCost = (u) => (Number.isFinite(u) && u > 0 ? `$${u.toFixed(3)}` : "$0.000");
 const formatTokens = (n) => {
 	if (!Number.isFinite(n) || n <= 0) return "0";

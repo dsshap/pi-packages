@@ -121,7 +121,11 @@ function displayName(name: string): string {
 
 function shortSessionId(uuid: string | undefined | null): string {
 	if (!uuid) return "";
-	return uuid.replace(/-/g, "").slice(0, 12);
+	// Keep hyphens so the displayed prefix can be pasted back into
+	// `pi --session <id>` — Pi prefix-matches against the canonical UUID
+	// form (`019e4b8a-a6b6-...`). Stripping hyphens produces a string that
+	// looks like an ID but fails to resolve.
+	return uuid.slice(0, 13);
 }
 
 function formatCost(usd: number): string {

@@ -1,0 +1,41 @@
+{
+	"name": "@dsshap/pi-gh",
+	"version": "1.0.0",
+	"description": "Pi GH — ships GitHub PR prompts (/pr, /triage-pr-feedback) and a /gh diagnostic command.",
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-extension",
+		"pi-coding-agent",
+		"github",
+		"gh",
+		"pr",
+		"prompts"
+	],
+	"type": "module",
+	"files": [
+		"extensions/",
+		"prompts/",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.74.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dsshap/pi-packages.git",
+		"directory": "packages/pi-gh"
+	},
+	"author": "dsshap",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/dsshap/pi-packages/issues"
+	},
+	"homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-gh#readme"
+}

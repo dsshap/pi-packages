@@ -1,7 +1,7 @@
 {
 	"name": "@dsshap/pi-grid-manager",
 	"version": "1.0.0",
-	"description": "Pi UI middleware: intercepts ui.setWidget() calls from other extensions and composes them into a single grid (configurable columns via /grid N). Other extensions need zero changes — load this FIRST in your pi.extensions array.",
+	"description": "Pi Grid Manager — UI middleware that intercepts ui.setWidget() calls from other extensions and composes them into a single grid widget with dynamic per-row width allocation. Configurable columns via /grid <N>. Downstream extensions need zero changes.",
 	"keywords": [
 		"pi",
 		"pi-package",
@@ -32,5 +32,9 @@
 		"directory": "packages/pi-grid-manager"
 	},
 	"author": "dsshap",
-	"license": "MIT"
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/dsshap/pi-packages/issues"
+	},
+	"homepage": "https://github.com/dsshap/pi-packages/tree/main/packages/pi-grid-manager#readme"
 }

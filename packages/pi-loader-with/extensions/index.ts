@@ -16,6 +16,7 @@
 
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { addToConfig, formatList, parseSubcommand, readConfigRaw, removeFromConfig } from "./commands.js";
 import { loadAndRunExtension } from "./loader.js";
 import { ensureRemote, getPackageManager } from "./remotes.js";
 import {
@@ -82,6 +83,9 @@ let withStartupSummary: {
 	errors: Array<{ name: string; message: string }>;
 } | null = null;
 
+/** Path to the config file resolved at factory time, used by the /loader-with command. */
+let configSourcePath: string | null = null;
+
 // ── Extension entry ──────────────────────────────────────────────────────
 
 export default async function extensionResources(pi: ExtensionAPI): Promise<void> {
@@ -113,10 +117,11 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 				}
 			}
 
+			const home = homedir();
+			const searchPaths = configSearchPaths(process.env, home);
 			if (allNames.length > 0) {
-				const home = homedir();
-				const searchPaths = configSearchPaths(process.env, home);
-				const { config, warnings } = ensureDefaultConfig(searchPaths, home);
+				const { config, sourcePath, warnings } = ensureDefaultConfig(searchPaths, home);
+				configSourcePath = sourcePath;
 
 				const startupErrors: Array<{ name: string; message: string }> = [];
 				for (const w of warnings) {
@@ -209,6 +214,11 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 				}
 
 				withStartupSummary = { loaded: loadedNames, errors: startupErrors };
+			} else {
+				// No --with names this session, but still ensure the config file
+				// exists so /loader-with has a target to write to.
+				const { sourcePath } = ensureDefaultConfig(searchPaths, home);
+				configSourcePath = sourcePath;
 			}
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
@@ -239,5 +249,86 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 				ctx.ui.notify(lines.join("\n"), "warning");
 			}
 		}
+	});
+
+	// ── /loader-with command ─────────────────────────────────────────────────
+
+	pi.registerCommand("loader-with", {
+		description:
+			"Manage pi-loader-with's config (`add <path>`, `remove <path>`, or no args for list). Changes take effect on next session.",
+		handler: async (args, ctx) => {
+			const { sub, rest } = parseSubcommand(args);
+			const cfgPath = configSourcePath ?? configSearchPaths(process.env, homedir()).slice(-1)[0];
+			const cwd = process.cwd();
+
+			if (sub === "" || sub === "list" || sub === "ls") {
+				let config: { locations: string[]; remotes: string[] };
+				try {
+					config = readConfigRaw(cfgPath);
+				} catch (e) {
+					ctx.ui.notify(`[loader-with] ${e instanceof Error ? e.message : String(e)}`, "error");
+					return;
+				}
+				ctx.ui.notify(formatList(config, cfgPath), "info");
+				return;
+			}
+
+			if (sub === "add") {
+				if (!rest) {
+					ctx.ui.notify("Usage: /loader-with add <path-or-git-spec>", "warning");
+					return;
+				}
+				const r = addToConfig(cfgPath, rest, cwd);
+				if (!r.ok) {
+					ctx.ui.notify(`[loader-with] add failed: ${r.error}`, "error");
+					return;
+				}
+				const tag = r.result.kind === "local" ? "location" : "remote";
+				if (r.result.added) {
+					ctx.ui.notify(`[loader-with] added ${tag}: ${r.result.stored}\nRestart pi for changes to take effect.`, "info");
+				} else {
+					ctx.ui.notify(`[loader-with] ${tag} already present: ${r.result.stored}`, "info");
+				}
+				return;
+			}
+
+			if (sub === "remove" || sub === "rm") {
+				if (!rest) {
+					ctx.ui.notify("Usage: /loader-with remove <path-or-git-spec>", "warning");
+					return;
+				}
+				const r = removeFromConfig(cfgPath, rest, cwd);
+				if (!r.ok) {
+					ctx.ui.notify(`[loader-with] remove failed: ${r.error}`, "error");
+					return;
+				}
+				ctx.ui.notify(
+					`[loader-with] removed from ${r.result.removedFrom.join(" + ")}: ${r.result.matchedValue}\nRestart pi for changes to take effect.`,
+					"info",
+				);
+				return;
+			}
+
+			if (sub === "help" || sub === "?") {
+				ctx.ui.notify(
+					[
+						"/loader-with usage:",
+						"  /loader-with                  Show current config",
+						"  /loader-with add <value>      Add a local dir or git spec (auto-detected)",
+						"  /loader-with remove <value>   Remove a location or remote",
+						"  /loader-with help             Show this help",
+						"",
+						"Examples:",
+						"  /loader-with add ~/my-pi-extensions",
+						"  /loader-with add git:github.com/foo/bar@v1",
+						"  /loader-with remove git:github.com/foo/bar@v1",
+					].join("\n"),
+					"info",
+				);
+				return;
+			}
+
+			ctx.ui.notify(`[loader-with] unknown subcommand: ${sub}. Try /loader-with help`, "warning");
+		},
 	});
 }

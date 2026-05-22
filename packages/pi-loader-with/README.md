@@ -165,6 +165,36 @@ Local locations always beat remote ones. If a developer has a local working copy
 PI_EXTENSION_LOADER_WITH_CONFIG=/tmp/my-config.json pi -e . --with foo
 ```
 
+## `/loader-with` slash command
+
+Manage the config without hand-editing JSON. Changes take effect on the **next** pi session — extensions cannot be loaded or unloaded mid-session.
+
+| Command | Effect |
+|---|---|
+| `/loader-with` | List the current `locations` and `remotes`, plus the resolved config path. |
+| `/loader-with add <value>` | Append `<value>`. Local vs remote is auto-detected (see below). Idempotent. |
+| `/loader-with remove <value>` | Remove a matching entry from either list. Errors if nothing matched. |
+| `/loader-with help` | Show usage. |
+
+**Auto-detection.** `add` looks at the input:
+
+| Looks like | Goes into |
+|---|---|
+| `git:...`, `https://...`, `http://...`, `ssh://...`, `git://...` | `remotes` |
+| SCP-style `git@host:user/repo` | `remotes` |
+| Everything else (absolute, `~/...`, relative, bare name) | `locations` after `~` expansion + cwd resolution; must exist as a directory |
+
+Examples:
+
+```
+/loader-with add ~/code/pi-extensions
+/loader-with add git:github.com/foo/bar@v1.2.3
+/loader-with remove git:github.com/foo/bar@v1.2.3
+/loader-with                                  # show current config
+```
+
+**Remove matching is forgiving.** It tries the verbatim string, the `~`-expanded form, and the cwd-resolved absolute form, so `~/foo`, `/Users/you/foo`, and `./foo` all remove the same stored entry.
+
 ## Name resolution
 
 Three tiers, first tier with a single match wins:

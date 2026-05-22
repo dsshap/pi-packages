@@ -119,6 +119,8 @@ describe("formatGhStatusMessage", () => {
 		];
 		for (const status of statuses) {
 			const msg = formatGhStatusMessage(status);
+			expect(msg).toContain("/commit");
+			expect(msg).toContain("/bcommit");
 			expect(msg).toContain("/pr");
 			expect(msg).toContain("/triage-pr-feedback");
 		}

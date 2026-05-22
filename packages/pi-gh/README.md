@@ -4,6 +4,8 @@
 
 ## What it ships
 
+- **`/commit`** — create a Conventional Commits commit from session changes on the current branch (no branching).
+- **`/bcommit`** — create a new git branch *and* a Conventional Commits commit from session changes.
 - **`/pr`** — push the current branch and open a pull request on GitHub (with auto-generated title and body).
 - **`/triage-pr-feedback <pr-number>`** — triage review feedback on a PR you own; produces a self-contained HTML report and opens it in the browser.
 - **`/gh`** — diagnostic command: checks whether `gh` is installed and authenticated, and lists the prompts available from this package.
@@ -31,6 +33,8 @@ pi -e .
 
 | Command | Argument | Purpose |
 |---|---|---|
+| `/commit` | `[scope-hint]` | Inspect the working tree, classify the change against Conventional Commits, write a subject + body, and commit on the current branch. Refuses to create/switch branches. |
+| `/bcommit` | `[scope-hint]` | Same as `/commit` but also creates a topic branch first. |
 | `/pr` | `[extra-context]` | Push current branch and open a GitHub PR with an auto-generated title and body. Bails out if on `main`/`master`, if working tree is dirty, or if a PR already exists for the branch. |
 | `/triage-pr-feedback` | `<pr-number>` | Fetch all review threads and comments for a PR you own; analyze each item (valid? actionable? in-scope?); write a self-contained HTML report and open it in the browser. |
 

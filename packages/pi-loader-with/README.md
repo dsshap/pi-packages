@@ -102,18 +102,18 @@ On first run with `--with`, this file is auto-created with an empty `locations` 
 ```json
 {
   "locations": [
-    "~/apps/pi-packages/packages",
-    "~/apps/ben-vargas-pi-packages/packages"
+    "~/pi-packages/packages",
+    "~/other-pi-extensions"
   ]
 }
 ```
 
 Each `location` is scanned for one-level subdirectories (skipping `.dotfiles` and `node_modules`). First location wins on duplicate folder names. `~/...` expansion is supported.
 
-Override the config path (e.g. for tests) with `PI_LOADER_WITH_CONFIG`:
+Override the config path (e.g. for tests) with `PI_EXTENSION_LOADER_WITH_CONFIG`:
 
 ```bash
-PI_LOADER_WITH_CONFIG=/tmp/my-config.json pi -e . --with foo
+PI_EXTENSION_LOADER_WITH_CONFIG=/tmp/my-config.json pi -e . --with foo
 ```
 
 ## Name resolution
@@ -138,17 +138,11 @@ Ambiguous matches (more than one in a tier) and unmatched names are reported as 
 4. The same `package.json`'s `pi.prompts` / `pi.skills` paths are captured.
 5. On Pi's `resources_discover` event, the captured paths are returned and merged into Pi's resource scanners.
 
-This pattern is established by [`@benvargas/pi-claude-code-use`](https://github.com/ben-vargas/pi-packages/tree/main/packages/pi-claude-code-use), which uses a similar jiti shim to capture and re-export companion tool definitions.
-
 ## Caveats
 
 1. **No manifest, no resources.** This package only contributes paths declared in `pi.prompts` / `pi.skills`. If a `--with`-loaded package doesn't declare them, only its code runs. (Prior versions of this package guessed sibling `prompts/`/`skills/` folders by convention; that auto-detection was removed in favor of the manifest, which matches Pi's native behavior.)
 
-2. **CLI flags from loaded extensions aren't respected.** Pi parses `argv` once at startup, before our factory runs. A `--with`-loaded extension's `registerFlag("foo", ...)` call installs the flag definition but the user's `--foo bar` value never reaches it. Defaults apply. Workarounds: env vars, config files inside the loaded extension.
-
-3. **Mid-session loading isn't supported.** `--with` is consumed exactly once, at factory startup. To change the loaded set, restart pi. There is no slash command — the loaded set is fixed for the session.
-
-4. **Errors are surfaced at startup only.** Unresolved names, ambiguous matches, and load failures are reported once via the `session_start` notification. They are not re-emitted on `/reload`.
+2. **Errors are surfaced at startup only.** Unresolved names, ambiguous matches, and load failures are reported once via the `session_start` notification. They are not re-emitted on `/reload`.
 
 ---
 

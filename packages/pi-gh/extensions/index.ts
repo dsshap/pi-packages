@@ -46,6 +46,8 @@ export function classifyGhAuthOutput(opts: { error: NodeJS.ErrnoException | null
 
 const PROMPTS_FOOTER = `
 This package ships prompts:
+  • /commit [scope] — Conventional Commits commit on the current branch
+  • /bcommit [scope] — new branch + Conventional Commits commit
   • /pr — open a PR for the current branch
   • /triage-pr-feedback <pr-number> — triage feedback on a PR you own`.trimStart();
 

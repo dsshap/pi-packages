@@ -8,8 +8,12 @@ Pi packages can include extensions, skills, prompt templates, and themes. See th
 
 | Package | Description |
 |---------|-------------|
+| [@dsshap/pi-loader-with](./packages/pi-loader-with/) | `--with` loader — load Pi extensions by short name and honor their `pi.prompts` / `pi.skills` manifest entries |
 | [@dsshap/pi-pi-experts](./packages/pi-pi-experts/) | Pi Pi — meta-agent that builds Pi agents using a team of parallel research experts |
 | [@dsshap/pi-agent-chain](./packages/pi-agent-chain/) | Agent Chain — sequential pipeline orchestrator for opinionated, repeatable multi-agent workflows |
+| [@dsshap/pi-grid-manager](./packages/pi-grid-manager/) | UI middleware that composes `ui.setWidget()` calls from other extensions into a single side-by-side grid widget (`/grid <N>`) |
+| [@dsshap/pi-gh](./packages/pi-gh/) | GitHub PR prompts (`/pr`, `/triage-pr-feedback`) and a `/gh` diagnostic command |
+
 
 Each package has its own README with setup instructions, usage, and configuration details.
 
@@ -39,8 +43,12 @@ pi install npm:@dsshap/<package-name>
 <summary>Install commands by package</summary>
 
 ```bash
+pi install npm:@dsshap/pi-loader-with
 pi install npm:@dsshap/pi-pi-experts
 pi install npm:@dsshap/pi-agent-chain
+pi install npm:@dsshap/pi-grid-manager
+pi install npm:@dsshap/pi-gh
+
 ```
 
 </details>

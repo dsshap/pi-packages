@@ -77,11 +77,11 @@ export function parseWithFromEnv(env: NodeJS.ProcessEnv): string[] {
 
 /**
  * Returns ordered list of config file paths to search.
- * `$PI_LOADER_WITH_CONFIG` (if set) wins; global home path is always last.
+ * `$PI_EXTENSION_LOADER_WITH_CONFIG` (if set) wins; global home path is always last.
  */
 export function configSearchPaths(env: NodeJS.ProcessEnv, homeDir: string): string[] {
 	const globalPath = join(homeDir, ".pi", "agent", "extensions", "pi-loader-with.json");
-	const envPath = env.PI_LOADER_WITH_CONFIG;
+	const envPath = env.PI_EXTENSION_LOADER_WITH_CONFIG;
 	return envPath ? [envPath, globalPath] : [globalPath];
 }
 

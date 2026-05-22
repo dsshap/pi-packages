@@ -11,6 +11,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface ResourcesConfig {
 	locations: string[];
+	remotes: string[];
 }
 
 // ── expandHome ────────────────────────────────────────────────────────────
@@ -117,7 +118,9 @@ export function loadConfigFrom(path: string, _homeDir: string): { config: Resour
 			const expanded = expandHome(l);
 			return isAbsolute(expanded) ? expanded : resolve(dirname(path), expanded);
 		});
-	return { config: { locations } };
+	const rawRemotes = Array.isArray(obj?.remotes) ? (obj.remotes as unknown[]) : [];
+	const remotes = rawRemotes.filter((r): r is string => typeof r === "string" && r.length > 0);
+	return { config: { locations, remotes } };
 }
 
 // ── ensureDefaultConfig ───────────────────────────────────────────────────
@@ -149,7 +152,7 @@ export function ensureDefaultConfig(searchPaths: string[], homeDir: string): Ens
 
 	// No file found — create the last path (global home).
 	const targetPath = searchPaths[searchPaths.length - 1];
-	const defaultConfig: ResourcesConfig = { locations: [] };
+	const defaultConfig: ResourcesConfig = { locations: [], remotes: [] };
 	const defaultContent = JSON.stringify(defaultConfig, null, 2);
 
 	try {
@@ -272,6 +275,75 @@ export function resolveAll(names: string[], candidates: Map<string, string>): Re
 	}
 
 	return { resolved, errors };
+}
+
+// ── isPinnedGitSpec ───────────────────────────────────────────────────────
+
+/**
+ * Detect whether a git source spec is pinned via `@<ref>` (tag/branch/sha).
+ * Matches Pi's own convention: `git:host/user/repo@v1`, `https://host/user/repo@main`.
+ * Returns `false` for sources without a ref (e.g. `git:github.com/foo/bar`) and
+ * for SCP-style `git@host:user/repo` (the `@` is part of the user, not a ref).
+ */
+export function isPinnedGitSpec(spec: string): boolean {
+	const raw = spec.startsWith("git:") ? spec.slice(4) : spec;
+	const lastSlash = raw.lastIndexOf("/");
+	if (lastSlash < 0) return false;
+	const tail = raw.slice(lastSlash + 1);
+	const at = tail.indexOf("@");
+	return at > 0 && at < tail.length - 1;
+}
+
+// ── scanCloneForCandidates ────────────────────────────────────────────────
+
+/**
+ * Given a cloned remote's root directory, derive a candidate map by basename.
+ *
+ * Auto-detects layout:
+ *  - If `<root>/packages/` exists → walk it as a monorepo (one-level subdirs).
+ *  - Else if `<root>/package.json` exists → treat the clone itself as a single
+ *    package, keyed by its directory basename.
+ *  - Otherwise → empty map.
+ *
+ * Same filtering as `listCandidates`: skip dotfiles and `node_modules`.
+ */
+export function scanCloneForCandidates(cloneRoot: string): Map<string, string> {
+	const out = new Map<string, string>();
+	const pkgsDir = join(cloneRoot, "packages");
+	let hasPackagesDir = false;
+	try {
+		hasPackagesDir = statSync(pkgsDir).isDirectory();
+	} catch {
+		hasPackagesDir = false;
+	}
+	if (hasPackagesDir) {
+		let entries: string[] = [];
+		try {
+			entries = readdirSync(pkgsDir);
+		} catch {
+			return out;
+		}
+		for (const entry of entries) {
+			if (entry.startsWith(".") || entry === "node_modules") continue;
+			const fullPath = join(pkgsDir, entry);
+			try {
+				if (!statSync(fullPath).isDirectory()) continue;
+			} catch {
+				continue;
+			}
+			if (!out.has(entry)) out.set(entry, fullPath);
+		}
+		return out;
+	}
+
+	try {
+		statSync(join(cloneRoot, "package.json"));
+	} catch {
+		return out;
+	}
+	const name = cloneRoot.split("/").filter(Boolean).pop();
+	if (name) out.set(name, cloneRoot);
+	return out;
 }
 
 // ── internal ──────────────────────────────────────────────────────────────

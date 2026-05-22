@@ -17,13 +17,14 @@
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadAndRunExtension } from "./loader.js";
+import { ensureRemote, getPackageManager } from "./remotes.js";
 import {
 	configSearchPaths,
 	ensureDefaultConfig,
 	listCandidates,
 	parseWithFromArgv,
 	parseWithFromEnv,
-	resolveAll,
+	resolveName,
 } from "./resolver.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 			type: "string",
 			default: "",
 			description:
-				"Comma-separated bundle names to load via pi-loader-with (e.g. --with pi-experts,agent-chain). Resolved against locations in ~/.pi/agent/extensions/pi-loader-with.json. Repeatable.",
+				"Comma-separated bundle names to load via pi-loader-with (e.g. --with pi-experts,agent-chain). Resolved against `locations` (local) and `remotes` (git) declared in ~/.pi/agent/extensions/pi-loader-with.json. Repeatable.",
 		});
 	} catch {
 		// benign on reload — flag already registered
@@ -122,9 +123,74 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 					startupErrors.push({ name: "(config)", message: w });
 				}
 
-				const candidates = listCandidates(config.locations);
-				const { resolved, errors } = resolveAll(allNames, candidates);
-				startupErrors.push(...errors);
+				// Local candidates: walked eagerly (cheap filesystem read).
+				const localCandidates = listCandidates(config.locations);
+
+				// Remote candidates: walked lazily, on first miss against locals.
+				const remoteCandidateCache = new Map<string, Map<string, string>>();
+				const remoteSpecs = config.remotes;
+				const pm = remoteSpecs.length > 0 ? getPackageManager() : null;
+				const reportProgress = (line: string) => process.stderr.write(`${line}\n`);
+
+				const resolved: Array<{ name: string; path: string }> = [];
+				const seenPaths = new Set<string>();
+
+				for (const name of allNames) {
+					// 1. Try local locations first.
+					let hit = resolveName(name, localCandidates);
+					let ambiguousReported = false;
+
+					if (!hit.ok && hit.reason === "ambiguous") {
+						startupErrors.push({
+							name,
+							message: `ambiguous in local locations — matches: ${(hit.matches ?? []).join(", ")}`,
+						});
+						ambiguousReported = true;
+					}
+
+					// 2. If no local hit, walk remotes in declared order, ensuring each
+					//    one (clone + lazy refresh) on first use this session.
+					if (!hit.ok && !ambiguousReported && pm !== null) {
+						for (const remote of remoteSpecs) {
+							let candidates = remoteCandidateCache.get(remote);
+							if (!candidates) {
+								try {
+									const result = await ensureRemote(remote, pm, { reportProgress });
+									candidates = result.candidates;
+									remoteCandidateCache.set(remote, candidates);
+								} catch (e) {
+									const msg = e instanceof Error ? e.message : String(e);
+									startupErrors.push({ name: remote, message: `remote ensure failed: ${msg}` });
+									remoteCandidateCache.set(remote, new Map());
+									continue;
+								}
+							}
+							const r = resolveName(name, candidates);
+							if (r.ok) {
+								hit = r;
+								break;
+							}
+							if (r.reason === "ambiguous") {
+								startupErrors.push({
+									name,
+									message: `ambiguous in remote ${remote} — matches: ${(r.matches ?? []).join(", ")}`,
+								});
+								ambiguousReported = true;
+								break;
+							}
+						}
+					}
+
+					if (!hit.ok) {
+						if (!ambiguousReported) {
+							startupErrors.push({ name, message: "no matching extension found" });
+						}
+						continue;
+					}
+					if (seenPaths.has(hit.path)) continue;
+					seenPaths.add(hit.path);
+					resolved.push({ name, path: hit.path });
+				}
 
 				const loadedNames: string[] = [];
 				for (const { name, path } of resolved) {

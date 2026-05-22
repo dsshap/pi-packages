@@ -6,12 +6,14 @@ import {
 	configSearchPaths,
 	ensureDefaultConfig,
 	expandHome,
+	isPinnedGitSpec,
 	listCandidates,
 	loadConfigFrom,
 	parseWithFromArgv,
 	parseWithFromEnv,
 	resolveAll,
 	resolveName,
+	scanCloneForCandidates,
 } from "../extensions/resolver.js";
 
 // ── parseWithFromArgv ──────────────────────────────────────────────────────
@@ -330,5 +332,119 @@ describe("resolveAll", () => {
 		expect(result.resolved.map((r) => r.name)).toEqual(["good", "good2"]);
 		expect(result.errors).toHaveLength(1);
 		expect(result.errors[0].name).toBe("missing");
+	});
+});
+
+// ── isPinnedGitSpec ────────────────────────────────────────────────────────
+
+describe("isPinnedGitSpec", () => {
+	it("returns true for branch refs", () => {
+		expect(isPinnedGitSpec("git:github.com/foo/bar@main")).toBe(true);
+		expect(isPinnedGitSpec("https://github.com/foo/bar@develop")).toBe(true);
+	});
+
+	it("returns true for tag refs", () => {
+		expect(isPinnedGitSpec("git:github.com/foo/bar@v1.2.3")).toBe(true);
+	});
+
+	it("returns true for commit SHAs", () => {
+		expect(isPinnedGitSpec("git:github.com/foo/bar@abc1234")).toBe(true);
+	});
+
+	it("returns false for unpinned specs", () => {
+		expect(isPinnedGitSpec("git:github.com/foo/bar")).toBe(false);
+		expect(isPinnedGitSpec("https://github.com/foo/bar")).toBe(false);
+	});
+
+	it("does not mistake SCP-style user@host for a ref", () => {
+		// In SCP form `git@github.com:foo/bar`, the `@` is part of the host,
+		// not a ref. The path-portion after the last `/` is `bar`, no `@`.
+		expect(isPinnedGitSpec("git:git@github.com:foo/bar")).toBe(false);
+		expect(isPinnedGitSpec("ssh://git@github.com/foo/bar")).toBe(false);
+	});
+
+	it("returns true when SCP-style spec has a trailing @ref", () => {
+		expect(isPinnedGitSpec("git:git@github.com:foo/bar@v1")).toBe(true);
+	});
+});
+
+// ── scanCloneForCandidates ─────────────────────────────────────────────────
+
+describe("scanCloneForCandidates", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "ext-res-scan-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("returns empty for an empty dir", () => {
+		const result = scanCloneForCandidates(tmp);
+		expect([...result.keys()]).toEqual([]);
+	});
+
+	it("detects monorepo via packages/ and walks subdirs", () => {
+		mkdirSync(join(tmp, "packages", "alpha"), { recursive: true });
+		mkdirSync(join(tmp, "packages", "beta"), { recursive: true });
+		writeFileSync(join(tmp, "package.json"), "{}");
+		const result = scanCloneForCandidates(tmp);
+		expect(new Set(result.keys())).toEqual(new Set(["alpha", "beta"]));
+		expect(result.get("alpha")).toBe(join(tmp, "packages", "alpha"));
+	});
+
+	it("skips dotfiles and node_modules under packages/", () => {
+		mkdirSync(join(tmp, "packages", ".hidden"), { recursive: true });
+		mkdirSync(join(tmp, "packages", "node_modules"), { recursive: true });
+		mkdirSync(join(tmp, "packages", "keep"), { recursive: true });
+		const result = scanCloneForCandidates(tmp);
+		expect([...result.keys()]).toEqual(["keep"]);
+	});
+
+	it("treats a clone without packages/ but with package.json as a single candidate", () => {
+		const clone = join(tmp, "single-pkg-repo");
+		mkdirSync(clone, { recursive: true });
+		writeFileSync(join(clone, "package.json"), "{}");
+		const result = scanCloneForCandidates(clone);
+		expect([...result.entries()]).toEqual([["single-pkg-repo", clone]]);
+	});
+
+	it("returns empty when no packages/ and no root package.json", () => {
+		const clone = join(tmp, "nothing");
+		mkdirSync(clone, { recursive: true });
+		const result = scanCloneForCandidates(clone);
+		expect([...result.keys()]).toEqual([]);
+	});
+});
+
+// ── loadConfigFrom (remotes) ───────────────────────────────────────────────
+
+describe("loadConfigFrom (remotes)", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "ext-res-rem-"));
+	});
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("defaults remotes to [] when absent", () => {
+		const p = join(tmp, "no-remotes.json");
+		writeFileSync(p, JSON.stringify({ locations: ["/foo"] }));
+		const result = loadConfigFrom(p, tmp);
+		expect(result.config?.remotes).toEqual([]);
+	});
+
+	it("parses remotes array, filtering non-strings and empties", () => {
+		const p = join(tmp, "with-remotes.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				locations: [],
+				remotes: ["git:github.com/foo/bar", "git:github.com/baz/qux@v1", 42, "", null],
+			}),
+		);
+		const result = loadConfigFrom(p, tmp);
+		expect(result.config?.remotes).toEqual(["git:github.com/foo/bar", "git:github.com/baz/qux@v1"]);
 	});
 });

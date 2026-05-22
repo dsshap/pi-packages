@@ -91,13 +91,17 @@ Argv names are processed first, then `PI_WITH` (deduped).
 
 Default location: `~/.pi/agent/extensions/pi-loader-with.json`
 
-On first run with `--with`, this file is auto-created with an empty `locations` list:
+On first run with `--with`, this file is auto-created:
 
 ```json
-{ "locations": [] }
+{ "locations": [], "remotes": [] }
 ```
 
-**You must populate it** with one or more directories that contain extension package folders (one-level scan):
+Populate one or both lists. Names are resolved against `locations` first, then `remotes` in declared order.
+
+### `locations` — local directories
+
+One or more directories that contain extension package folders (one-level scan):
 
 ```json
 {
@@ -110,7 +114,52 @@ On first run with `--with`, this file is auto-created with an empty `locations` 
 
 Each `location` is scanned for one-level subdirectories (skipping `.dotfiles` and `node_modules`). First location wins on duplicate folder names. `~/...` expansion is supported.
 
-Override the config path (e.g. for tests) with `PI_EXTENSION_LOADER_WITH_CONFIG`:
+### `remotes` — git repos (cloned on demand)
+
+Git source specs in Pi's standard syntax (same as `pi install`):
+
+```json
+{
+  "locations": [],
+  "remotes": [
+    "git:github.com/dsshap/pi-packages",
+    "git:github.com/foo/bar@v1.2.3",
+    "https://github.com/baz/qux@main"
+  ]
+}
+```
+
+Each remote is cloned on first use to `~/.pi/agent/git/<host>/<user>/<repo>` (Pi's standard cache — same as `pi install` writes to), and `npm install` runs inside the clone. Subsequent sessions reuse the cache.
+
+**Layout auto-detection.** When walking a clone for candidates:
+  - If `<clone>/packages/` exists → treated as a monorepo; each subdirectory becomes a candidate by basename.
+  - Otherwise, if `<clone>/package.json` exists → the clone root itself is a single candidate keyed by its directory basename.
+
+**Lazy refresh.** When resolution falls through to a remote during a session, `pi-loader-with` does the following exactly once per remote per session:
+
+| Spec form | Behavior |
+|---|---|
+| Bare (`git:github.com/foo/bar`) | `git fetch + reset --hard FETCH_HEAD` (~500ms). If HEAD moved, `npm install` re-runs inside the clone. |
+| Pinned (`@<ref>`) | No refresh — the on-disk clone is used as-is. (Same convention as `pi install`: any explicit `@ref` is pinned.) |
+| Any spec with `PI_OFFLINE=1` | No network access — use whatever is on disk; error out if the clone is missing. |
+
+**Failure mode.** Any clone/fetch/reset/`npm install` error is reported via the startup summary and the matching name fails to resolve (hard fail per spec, not per name).
+
+### Resolution order
+
+```
+for each name:
+  1. Try local `locations[]` (in declared order, first-match-wins)
+  2. If no hit, try each remote in `remotes[]`:
+       - first time this session: clone (if missing) and refresh (if unpinned)
+       - then scan `<clone>/packages/*` or root for candidates
+       - first-match-wins within each remote
+  3. If still no hit: reported as a startup error
+```
+
+Local locations always beat remote ones. If a developer has a local working copy of `pi-experts`, it shadows the remote version of the same name — the right default for monorepo contributors.
+
+### Override config path
 
 ```bash
 PI_EXTENSION_LOADER_WITH_CONFIG=/tmp/my-config.json pi -e . --with foo

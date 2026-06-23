@@ -13,6 +13,10 @@
  * Commands:
  *   /chain             — switch active chain
  *   /chain-list        — list all available chains
+ *   /chain-send        — send a message or /command to any (or all) subagent(s).
+ *                        `/new`, `/clear`, `/reset` wipe that agent's session file (true /new).
+ *                        Anything else is delivered immediately via a `pi -c --session ... -p`
+ *                        invocation, landing as a real user turn in that agent's session history.
  *
  * Usage: pi -e .
  *
@@ -38,8 +42,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "no
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSubagentExtraArgs } from "@dsshap/pi-subagent-flags";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { Markdown, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 // ── Types ────────────────────────────────────────
@@ -160,6 +164,21 @@ function padCell(styled: string, width: number, align: "left" | "right" = "left"
 	if (w >= width) return truncateToWidth(styled, width);
 	const pad = " ".repeat(width - w);
 	return align === "left" ? styled + pad : pad + styled;
+}
+
+const COLLAPSED_RESULT_CHARS = 8000;
+const EXPANDED_RESULT_CHARS = 30000;
+
+function truncatePanelOutput(output: string, maxChars: number): { text: string; truncated: boolean } {
+	if (output.length <= maxChars) return { text: output, truncated: false };
+	return {
+		text: `${output.slice(0, maxChars)}\n\n… [truncated in panel; expand for more output]`,
+		truncated: true,
+	};
+}
+
+function ctrlOHint(theme: Theme, description: string): string {
+	return `${theme.fg("dim", "ctrl+o")} ${theme.fg("muted", description)}`;
 }
 
 // ── Chain YAML Parser ────────────────────────────
@@ -473,19 +492,51 @@ export default function (pi: ExtensionAPI) {
 	// import.meta.url so installed packages (npm or git) Just Work.
 	const BUNDLED_AGENTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "agents");
 
-	function loadChains(cwd: string) {
-		sessionDir = join(cwd, ".pi", "agent-sessions");
+	function parentSessionKey(ctx: ExtensionContext | undefined): string {
+		try {
+			const id = ctx?.sessionManager?.getSessionId?.();
+			if (id) return id.replace(/[^a-zA-Z0-9._-]/g, "_");
+		} catch {}
+		return "bootstrap";
+	}
+
+	function scopedSessionDir(cwd: string, ctx: ExtensionContext | undefined): string {
+		// Scope subagent sessions to the active parent Pi session. This prevents
+		// two different Pi tabs/sessions in the same repo from racing on the same
+		// `.pi/agent-sessions/<parent-session-id>/chain-<agent>.json` files.
+		return resolve(cwd, ".pi", "agent-sessions", parentSessionKey(ctx));
+	}
+
+	function getAgentSessionFile(agentKey: string): string {
+		return join(sessionDir, `chain-${agentKey}.json`);
+	}
+
+	function rebuildAgentSessionMap() {
+		agentSessions.clear();
+		for (const [key] of allAgents) {
+			const sessionFile = getAgentSessionFile(key);
+			agentSessions.set(key, existsSync(sessionFile) ? sessionFile : null);
+		}
+	}
+
+	function setSessionScope(cwd: string, ctx: ExtensionContext | undefined) {
+		sessionDir = scopedSessionDir(cwd, ctx);
 		if (!existsSync(sessionDir)) {
 			mkdirSync(sessionDir, { recursive: true });
 		}
+		rebuildAgentSessionMap();
+	}
 
-		allAgents = scanAgentDirs(cwd, BUNDLED_AGENTS_DIR);
-
-		agentSessions.clear();
-		for (const [key] of allAgents) {
-			const sessionFile = join(sessionDir, `chain-${key}.json`);
-			agentSessions.set(key, existsSync(sessionFile) ? sessionFile : null);
+	function ensureSessionScope(ctx: ExtensionContext) {
+		const nextSessionDir = scopedSessionDir(ctx.cwd, ctx);
+		if (sessionDir !== nextSessionDir) {
+			setSessionScope(ctx.cwd, ctx);
 		}
+	}
+
+	function loadChains(cwd: string, ctx?: ExtensionContext) {
+		allAgents = scanAgentDirs(cwd, BUNDLED_AGENTS_DIR);
+		setSessionScope(cwd, ctx);
 
 		// Prefer user's chain config; fall back to the bundled defaults.
 		const userChainPath = join(cwd, ".pi", "agents", "agent-chain.yaml");
@@ -633,7 +684,7 @@ export default function (pi: ExtensionAPI) {
 					elapsed: string,
 				): string => {
 					const rawLabel = `${prefix}\u25c6 ${label}`;
-					const styledLabel = theme.fg("dim", prefix) + bullet + " " + theme.fg("accent", theme.bold(label));
+					const styledLabel = `${theme.fg("dim", prefix)}${bullet} ${theme.fg("accent", theme.bold(label))}`;
 					const rawW = visibleWidth(rawLabel);
 					const labelCell = styledLabel + " ".repeat(Math.max(0, labelWidth - rawW));
 
@@ -740,21 +791,14 @@ export default function (pi: ExtensionAPI) {
 		return { full, id };
 	}
 
-	// ── Run Agent (subprocess) ──────────────────
+	// ── Subagent spawn args (shared by runAgent + sendToAgent) ──
 
-	function runAgent(
-		agentDef: AgentDef,
-		task: string,
-		stepIndex: number,
-		ctx: ExtensionContext,
-		signal: AbortSignal | undefined,
-	): Promise<{ output: string; exitCode: number; elapsed: number; aborted: boolean }> {
+	function buildAgentSpawnArgs(agentDef: AgentDef, ctx: ExtensionContext, prompt: string) {
+		ensureSessionScope(ctx);
 		const { full: model } = resolveStepModel(agentDef, ctx);
-
 		const agentKey = agentDef.name.toLowerCase().replace(/\s+/g, "-");
-		const agentSessionFile = join(sessionDir, `chain-${agentKey}.json`);
-		const hasSession = agentSessions.get(agentKey);
-
+		const agentSessionFile = getAgentSessionFile(agentKey);
+		mkdirSync(dirname(agentSessionFile), { recursive: true });
 		const args = [
 			"--mode",
 			"json",
@@ -771,14 +815,43 @@ export default function (pi: ExtensionAPI) {
 			"--session",
 			agentSessionFile,
 		];
-
-		if (hasSession) {
-			args.push("-c");
-		}
-
-		// See ~/.pi/agent/extensions/subagent-flags.json for optional `-e` injection into the child
+		if (agentSessions.get(agentKey)) args.push("-c");
 		args.push(...loadSubagentExtraArgs(EXTENSION_NAME, ctx.cwd));
-		args.push(task);
+		args.push(prompt);
+		return { args, agentKey, agentSessionFile };
+	}
+
+	// Fire `pi -c --session ... -p <message>` so `<message>` lands as a real
+	// user turn in the agent's session history. Next `run_chain` resumes from
+	// there — no in-process queueing.
+	function sendToAgent(agentDef: AgentDef, message: string, ctx: ExtensionContext) {
+		const { args, agentKey, agentSessionFile } = buildAgentSpawnArgs(agentDef, ctx, message);
+		const proc = spawn("pi", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
+		const supervisor = superviseChild(proc, { gracePeriodMs: 2000 });
+		activeSupervisors.add(supervisor);
+		proc.stdout?.on("data", () => {});
+		proc.stderr?.on("data", () => {});
+		return supervisor.waitForExit().then((exit) => {
+			activeSupervisors.delete(supervisor);
+			supervisor.dispose();
+			const aborted = exit.cause === "user" || exit.cause === "shutdown";
+			if (exit.exitCode === 0 && !aborted && exit.cause === "normal") {
+				agentSessions.set(agentKey, agentSessionFile);
+			}
+			return { exitCode: exit.exitCode, aborted };
+		});
+	}
+
+	// ── Run Agent (subprocess) ──────────────────
+
+	function runAgent(
+		agentDef: AgentDef,
+		task: string,
+		stepIndex: number,
+		ctx: ExtensionContext,
+		signal: AbortSignal | undefined,
+	): Promise<{ output: string; exitCode: number; elapsed: number; aborted: boolean }> {
+		const { args, agentKey, agentSessionFile } = buildAgentSpawnArgs(agentDef, ctx, task);
 
 		const textChunks: string[] = [];
 		const startTime = Date.now();
@@ -1074,17 +1147,28 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 
-		renderCall(args, theme) {
+		renderCall(args, theme, context) {
 			const task = (args as RunChainArgs).task || "";
-			const preview = task.length > 60 ? `${task.slice(0, 57)}...` : task;
-			return new Text(
-				theme.fg("toolTitle", theme.bold("run_chain ")) +
-					theme.fg("accent", activeChain?.name || "?") +
-					theme.fg("dim", " — ") +
-					theme.fg("muted", preview),
-				0,
-				0,
-			);
+			const title = `${theme.fg("toolTitle", theme.bold("run_chain "))}${theme.fg("accent", activeChain?.name || "?")}`;
+			const expanded = context.expanded;
+			const hint = ctrlOHint(theme, expanded ? "collapse" : "full prompt");
+
+			return {
+				invalidate() {},
+				render(width: number): string[] {
+					const hintWidth = visibleWidth(hint);
+					const hintLine = `${" ".repeat(Math.max(0, width - hintWidth))}${truncateToWidth(hint, width)}`;
+
+					if (expanded) {
+						const prompt = new Text(theme.fg("muted", task || "(empty)"), 0, 0);
+						return [truncateToWidth(title, width), hintLine, theme.fg("dim", "Task prompt:"), "", ...prompt.render(width)];
+					}
+
+					const preview = task.length > 60 ? `${task.slice(0, 57)}...` : task;
+					const header = `${title}${theme.fg("dim", " — ")}${theme.fg("muted", preview)}`;
+					return [truncateToWidth(header, width), hintLine];
+				},
+			};
 		},
 
 		renderResult(result, options, theme) {
@@ -1101,15 +1185,28 @@ export default function (pi: ExtensionAPI) {
 			const icon = details.status === "done" ? "✓" : "✗";
 			const color = details.status === "done" ? "success" : "error";
 			const elapsed = typeof details.elapsed === "number" ? Math.round(details.elapsed / 1000) : 0;
-			const header = theme.fg(color, `${icon} ${details.chain}`) + theme.fg("dim", ` ${elapsed}s`);
+			const header = theme.fg(color, `${icon} ${details.chain || "chain"}`) + theme.fg("dim", ` ${elapsed}s`);
+			const output = (details.fullOutput || "").trim();
 
-			if (options.expanded && details.fullOutput) {
-				const output =
-					details.fullOutput.length > 4000 ? `${details.fullOutput.slice(0, 4000)}\n... [truncated]` : details.fullOutput;
-				return new Text(`${header}\n${theme.fg("muted", output)}`, 0, 0);
-			}
+			return {
+				invalidate() {},
+				render(width: number): string[] {
+					const lines = [truncateToWidth(header, width)];
+					if (!output) return lines;
 
-			return new Text(header, 0, 0);
+					const maxChars = options.expanded ? EXPANDED_RESULT_CHARS : COLLAPSED_RESULT_CHARS;
+					const { text, truncated } = truncatePanelOutput(output, maxChars);
+					const markdown = new Markdown(text, 0, 0, getMarkdownTheme(), {
+						color: (content: string) => theme.fg("muted", content),
+					});
+
+					lines.push(theme.fg("dim", "Final output:"), ...markdown.render(width));
+					if (!options.expanded && truncated) {
+						lines.push(ctrlOHint(theme, "show more output"));
+					}
+					return lines;
+				},
+			};
 		},
 	});
 
@@ -1119,6 +1216,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Switch active chain",
 		handler: async (_args, ctx) => {
 			widgetCtx = ctx;
+			ensureSessionScope(ctx);
 			if (chains.length === 0) {
 				ctx.ui.notify("No chains defined. Add .pi/agents/agent-chain.yaml or use the bundled defaults.", "warning");
 				return;
@@ -1141,10 +1239,98 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	const RESET_COMMANDS = new Set(["/new", "/clear", "/reset"]);
+
+	pi.registerCommand("chain-send", {
+		description:
+			"Send a message or slash command to a subagent (or all). `/new`, `/clear`, `/reset` wipe its session; anything else runs as a one-shot turn.",
+		handler: async (rawArgs, ctx) => {
+			widgetCtx = ctx;
+			ensureSessionScope(ctx);
+			const keys = activeChain
+				? Array.from(new Set(activeChain.steps.map((s) => s.agent.toLowerCase())))
+				: Array.from(allAgents.keys());
+			if (keys.length === 0) {
+				ctx.ui.notify("No agents loaded.", "warning");
+				return;
+			}
+
+			// `<target> <message...>`, or fall back to interactive pickers.
+			let targets: string[];
+			let message = "";
+			const m = (rawArgs || "").trim().match(/^(\S+)(?:\s+([\s\S]+))?$/);
+			if (m) {
+				const tok = m[1].toLowerCase();
+				if (tok === "all" || tok === "*") targets = keys;
+				else if (allAgents.has(tok)) targets = [tok];
+				else {
+					ctx.ui.notify(`Unknown target "${tok}". Try: all, ${keys.join(", ")}`, "warning");
+					return;
+				}
+				message = (m[2] ?? "").trim();
+			} else {
+				const labels = ["all", ...keys.map(displayName)];
+				const choice = await ctx.ui.select("Send to which agent?", labels);
+				if (!choice) return;
+				targets = choice === "all" ? keys : [keys[labels.indexOf(choice) - 1]];
+			}
+			if (!message) {
+				const entered = await ctx.ui.input("Message", "/new, /clear, /reset, or free text...");
+				if (!entered?.trim()) return;
+				message = entered.trim();
+			}
+
+			const label = targets.length === 1 ? displayName(targets[0]) : `${targets.length} agents`;
+
+			// /new and friends — just wipe the session file(s) + widget rows.
+			if (RESET_COMMANDS.has(message.toLowerCase())) {
+				const set = new Set(targets);
+				for (const k of targets) {
+					try {
+						unlinkSync(getAgentSessionFile(k));
+					} catch {}
+					agentSessions.set(k, null);
+				}
+				if (activeChain) {
+					stepStates = stepStates.map((s) => {
+						if (!set.has(s.agent.toLowerCase())) return s;
+						const fresh = freshStep(s.agent);
+						const def = allAgents.get(s.agent.toLowerCase());
+						if (def) fresh.model = resolveStepModel(def, ctx).id;
+						return fresh;
+					});
+					updateWidget();
+				}
+				ctx.ui.notify(`${message} → ${label}`, "info");
+				return;
+			}
+
+			// Anything else — fire `pi -c -p <message>` per target in parallel.
+			// Skip if any target is mid-step (would race on the session file).
+			if (stepStates.some((s) => s.status === "running" && targets.includes(s.agent.toLowerCase()))) {
+				ctx.ui.notify("Cannot send while a target agent is mid-run.", "warning");
+				return;
+			}
+			ctx.ui.notify(`Sending to ${label}...`, "info");
+			const exits = await Promise.all(
+				targets.flatMap((k) => {
+					const def = allAgents.get(k);
+					return def ? [sendToAgent(def, message, ctx)] : [];
+				}),
+			);
+			const failed = exits.filter((e) => e.exitCode !== 0 || e.aborted).length;
+			ctx.ui.notify(
+				failed === 0 ? `Delivered to ${label}` : `${failed}/${targets.length} failed`,
+				failed === 0 ? "info" : "warning",
+			);
+		},
+	});
+
 	pi.registerCommand("chain-list", {
 		description: "List all available chains",
 		handler: async (_args, ctx) => {
 			widgetCtx = ctx;
+			ensureSessionScope(ctx);
 			if (chains.length === 0) {
 				ctx.ui.notify("No chains defined.", "warning");
 				return;
@@ -1179,6 +1365,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event, _ctx) => {
+		ensureSessionScope(_ctx);
 		// Force widget reset on first turn after /new
 		if (pendingReset && activeChain) {
 			pendingReset = false;
@@ -1310,20 +1497,10 @@ ${agentCatalog}
 		// render — the demand-driven repaint Pi's TUI expects.
 		mountWidget();
 
-		// Wipe chain session files — reset agent context on /new and launch
-		const sessDir = join(_ctx.cwd, ".pi", "agent-sessions");
-		if (existsSync(sessDir)) {
-			for (const f of readdirSync(sessDir)) {
-				if (f.startsWith("chain-") && f.endsWith(".json")) {
-					try {
-						unlinkSync(join(sessDir, f));
-					} catch {}
-				}
-			}
-		}
-
-		// Reload chains + clear agentSessions map (all agents start fresh)
-		loadChains(_ctx.cwd);
+		// Reload chains and switch the child-session namespace to the active
+		// parent session id. Do not delete old namespaces here: /new naturally gets
+		// a fresh parent id, while /resume and /reload should preserve memory.
+		loadChains(_ctx.cwd, _ctx);
 
 		if (chains.length === 0) {
 			_ctx.ui.notify("No chains found. Add .pi/agents/agent-chain.yaml or use the bundled defaults.", "warning");
@@ -1341,7 +1518,7 @@ ${agentCatalog}
 
 		_ctx.ui.setStatus("agent-chain", `Chain: ${name} (${stepCount} steps)`);
 		_ctx.ui.notify(
-			`Chain: ${name}\n${description}\n${flow}\n\n` + `/chain             Switch chain\n` + `/chain-list        List all chains`,
+			`Chain: ${name}\n${description}\n${flow}\n\n/chain             Switch chain\n/chain-list        List all chains\n/chain-send        Message/reset subagents`,
 			"info",
 		);
 

@@ -16,7 +16,15 @@
 
 import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { addToConfig, formatList, parseSubcommand, readConfigRaw, removeFromConfig } from "./commands.js";
+import {
+	addToConfig,
+	formatList,
+	parseAddArgs,
+	parseSubcommand,
+	type RawConfigShape,
+	readConfigRaw,
+	removeFromConfig,
+} from "./commands.js";
 import { loadAndRunExtension } from "./loader.js";
 import { ensureRemote, getPackageManager } from "./remotes.js";
 import {
@@ -95,7 +103,7 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 			type: "string",
 			default: "",
 			description:
-				"Comma-separated bundle names to load via pi-loader-with (e.g. --with pi-experts,agent-chain). Resolved against `locations` (local) and `remotes` (git) declared in ~/.pi/agent/extensions/pi-loader-with.json. Repeatable.",
+				"Comma-separated bundle names to load via pi-loader-with (e.g. --with pi-experts,agent-chain). Resolved against `locations` (local) and `remotes` (git/npm) declared in ~/.pi/agent/extensions/pi-loader-with.json. Repeatable.",
 		});
 	} catch {
 		// benign on reload — flag already registered
@@ -129,12 +137,13 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 				}
 
 				// Local candidates: walked eagerly (cheap filesystem read).
-				const localCandidates = listCandidates(config.locations);
+				const { candidates: localCandidates, warnings: locWarnings } = listCandidates(config.locations);
+				for (const w of locWarnings) startupErrors.push({ name: "(locations)", message: w });
 
 				// Remote candidates: walked lazily, on first miss against locals.
 				const remoteCandidateCache = new Map<string, Map<string, string>>();
-				const remoteSpecs = config.remotes;
-				const pm = remoteSpecs.length > 0 ? getPackageManager() : null;
+				const remoteEntries = config.remotes;
+				const pm = remoteEntries.length > 0 ? getPackageManager() : null;
 				const reportProgress = (line: string) => process.stderr.write(`${line}\n`);
 
 				const resolved: Array<{ name: string; path: string }> = [];
@@ -156,17 +165,24 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 					// 2. If no local hit, walk remotes in declared order, ensuring each
 					//    one (clone + lazy refresh) on first use this session.
 					if (!hit.ok && !ambiguousReported && pm !== null) {
-						for (const remote of remoteSpecs) {
-							let candidates = remoteCandidateCache.get(remote);
+						for (const remote of remoteEntries) {
+							const remoteSpec = remote.spec;
+							let candidates = remoteCandidateCache.get(remoteSpec);
 							if (!candidates) {
 								try {
-									const result = await ensureRemote(remote, pm, { reportProgress });
+									const result = await ensureRemote(remoteSpec, pm, { reportProgress, alias: remote.name });
 									candidates = result.candidates;
-									remoteCandidateCache.set(remote, candidates);
+									remoteCandidateCache.set(remoteSpec, candidates);
+									if (remote.name && result.isMonorepo) {
+										startupErrors.push({
+											name: remoteSpec,
+											message: `alias "${remote.name}" ignored — remote is a monorepo (each sub-package is its own candidate)`,
+										});
+									}
 								} catch (e) {
 									const msg = e instanceof Error ? e.message : String(e);
-									startupErrors.push({ name: remote, message: `remote ensure failed: ${msg}` });
-									remoteCandidateCache.set(remote, new Map());
+									startupErrors.push({ name: remoteSpec, message: `remote ensure failed: ${msg}` });
+									remoteCandidateCache.set(remoteSpec, new Map());
 									continue;
 								}
 							}
@@ -178,7 +194,7 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 							if (r.reason === "ambiguous") {
 								startupErrors.push({
 									name,
-									message: `ambiguous in remote ${remote} — matches: ${(r.matches ?? []).join(", ")}`,
+									message: `ambiguous in remote ${remoteSpec} — matches: ${(r.matches ?? []).join(", ")}`,
 								});
 								ambiguousReported = true;
 								break;
@@ -262,7 +278,7 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 			const cwd = process.cwd();
 
 			if (sub === "" || sub === "list" || sub === "ls") {
-				let config: { locations: string[]; remotes: string[] };
+				let config: RawConfigShape;
 				try {
 					config = readConfigRaw(cfgPath);
 				} catch (e) {
@@ -275,19 +291,28 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 
 			if (sub === "add") {
 				if (!rest) {
-					ctx.ui.notify("Usage: /loader-with add <path-or-git-spec>", "warning");
+					ctx.ui.notify("Usage: /loader-with add <path-or-git-spec> [as <name>]", "warning");
 					return;
 				}
-				const r = addToConfig(cfgPath, rest, cwd);
+				const { value, name } = parseAddArgs(rest);
+				if (!value) {
+					ctx.ui.notify("Usage: /loader-with add <path-or-git-spec> [as <name>]", "warning");
+					return;
+				}
+				const r = addToConfig(cfgPath, value, cwd, name);
 				if (!r.ok) {
 					ctx.ui.notify(`[loader-with] add failed: ${r.error}`, "error");
 					return;
 				}
 				const tag = r.result.kind === "local" ? "location" : "remote";
+				const aliasNote = r.result.name ? ` (as ${r.result.name})` : "";
 				if (r.result.added) {
-					ctx.ui.notify(`[loader-with] added ${tag}: ${r.result.stored}\nRestart pi for changes to take effect.`, "info");
+					ctx.ui.notify(
+						`[loader-with] added ${tag}: ${r.result.stored}${aliasNote}\nRestart pi for changes to take effect.`,
+						"info",
+					);
 				} else {
-					ctx.ui.notify(`[loader-with] ${tag} already present: ${r.result.stored}`, "info");
+					ctx.ui.notify(`[loader-with] ${tag} already present: ${r.result.stored}${aliasNote}`, "info");
 				}
 				return;
 			}
@@ -313,14 +338,17 @@ export default async function extensionResources(pi: ExtensionAPI): Promise<void
 				ctx.ui.notify(
 					[
 						"/loader-with usage:",
-						"  /loader-with                  Show current config",
-						"  /loader-with add <value>      Add a local dir or git spec (auto-detected)",
-						"  /loader-with remove <value>   Remove a location or remote",
-						"  /loader-with help             Show this help",
+						"  /loader-with                          Show current config",
+						"  /loader-with add <value> [as <name>]  Add a local dir or git spec (auto-detected)",
+						"  /loader-with remove <value>           Remove a location or remote (matches path, spec, or alias)",
+						"  /loader-with help                     Show this help",
 						"",
 						"Examples:",
 						"  /loader-with add ~/my-pi-extensions",
+						"  /loader-with add ~/code/plannotator as plan",
 						"  /loader-with add git:github.com/foo/bar@v1",
+						"  /loader-with add npm:@plannotator/pi-extension as plannotator",
+						"  /loader-with remove plan",
 						"  /loader-with remove git:github.com/foo/bar@v1",
 					].join("\n"),
 					"info",

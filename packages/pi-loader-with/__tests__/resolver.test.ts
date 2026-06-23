@@ -6,7 +6,10 @@ import {
 	configSearchPaths,
 	ensureDefaultConfig,
 	expandHome,
+	getRemoteScheme,
 	isPinnedGitSpec,
+	isPinnedNpmSpec,
+	isPinnedRemoteSpec,
 	listCandidates,
 	loadConfigFrom,
 	parseWithFromArgv,
@@ -164,14 +167,47 @@ describe("loadConfigFrom", () => {
 		writeFileSync(p, JSON.stringify({ locations: ["/abs/path", 42, "/another", null] }));
 		const result = loadConfigFrom(p, tmp);
 		expect(result.config).not.toBeNull();
-		expect(result.config?.locations).toEqual(["/abs/path", "/another"]);
+		expect(result.config?.locations).toEqual([{ path: "/abs/path" }, { path: "/another" }]);
 	});
 
 	it("expands ~ in locations", () => {
 		const p = join(tmp, "tilde.json");
 		writeFileSync(p, JSON.stringify({ locations: ["~/code"] }));
 		const result = loadConfigFrom(p, tmp);
-		expect(result.config?.locations).toEqual([join(homedir(), "code")]);
+		expect(result.config?.locations).toEqual([{ path: join(homedir(), "code") }]);
+	});
+
+	it("parses object-form locations with name aliases", () => {
+		const p = join(tmp, "obj.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				locations: [
+					{ path: "/foo", name: "plan" },
+					{ path: "/bar" },
+					{ name: "orphan" }, // missing path — dropped
+					{ path: "", name: "empty" }, // empty path — dropped
+				],
+			}),
+		);
+		const result = loadConfigFrom(p, tmp);
+		expect(result.config?.locations).toEqual([{ path: "/foo", name: "plan" }, { path: "/bar" }]);
+	});
+
+	it("parses object-form remotes with name aliases", () => {
+		const p = join(tmp, "obj-remotes.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				locations: [],
+				remotes: ["git:github.com/foo/bar", { spec: "git:github.com/baz/qux", name: "qux-alias" }, { name: "orphan" }],
+			}),
+		);
+		const result = loadConfigFrom(p, tmp);
+		expect(result.config?.remotes).toEqual([
+			{ spec: "git:github.com/foo/bar" },
+			{ spec: "git:github.com/baz/qux", name: "qux-alias" },
+		]);
 	});
 });
 
@@ -192,7 +228,7 @@ describe("ensureDefaultConfig", () => {
 		writeFileSync(first, JSON.stringify({ locations: ["/first"] }));
 		const result = ensureDefaultConfig([first, second], tmp);
 		expect(result.sourcePath).toBe(first);
-		expect(result.config.locations).toEqual(["/first"]);
+		expect(result.config.locations).toEqual([{ path: "/first" }]);
 		expect(result.created).toBe(false);
 		expect(existsSync(second)).toBe(false);
 	});
@@ -203,7 +239,7 @@ describe("ensureDefaultConfig", () => {
 		writeFileSync(second, JSON.stringify({ locations: ["/second"] }));
 		const result = ensureDefaultConfig([first, second], tmp);
 		expect(result.sourcePath).toBe(second);
-		expect(result.config.locations).toEqual(["/second"]);
+		expect(result.config.locations).toEqual([{ path: "/second" }]);
 		expect(result.created).toBe(false);
 	});
 
@@ -233,16 +269,16 @@ describe("listCandidates", () => {
 		const loc = join(tmp, "loc");
 		mkdirSync(join(loc, ".git"), { recursive: true });
 		mkdirSync(join(loc, "ext-a"), { recursive: true });
-		const result = listCandidates([loc]);
-		expect([...result.keys()]).toEqual(["ext-a"]);
+		const { candidates } = listCandidates([loc]);
+		expect([...candidates.keys()]).toEqual(["ext-a"]);
 	});
 
 	it("skips node_modules", () => {
 		const loc = join(tmp, "loc");
 		mkdirSync(join(loc, "node_modules"), { recursive: true });
 		mkdirSync(join(loc, "ext-b"), { recursive: true });
-		const result = listCandidates([loc]);
-		expect([...result.keys()]).toEqual(["ext-b"]);
+		const { candidates } = listCandidates([loc]);
+		expect([...candidates.keys()]).toEqual(["ext-b"]);
 	});
 
 	it("skips files (non-dirs)", () => {
@@ -250,8 +286,8 @@ describe("listCandidates", () => {
 		mkdirSync(loc, { recursive: true });
 		writeFileSync(join(loc, "file.ts"), "");
 		mkdirSync(join(loc, "ext-c"), { recursive: true });
-		const result = listCandidates([loc]);
-		expect([...result.keys()]).toEqual(["ext-c"]);
+		const { candidates } = listCandidates([loc]);
+		expect([...candidates.keys()]).toEqual(["ext-c"]);
 	});
 
 	it("first location wins on name collision", () => {
@@ -259,16 +295,57 @@ describe("listCandidates", () => {
 		const loc2 = join(tmp, "loc2");
 		mkdirSync(join(loc1, "shared"), { recursive: true });
 		mkdirSync(join(loc2, "shared"), { recursive: true });
-		const result = listCandidates([loc1, loc2]);
-		expect(result.get("shared")).toBe(join(loc1, "shared"));
+		const { candidates } = listCandidates([loc1, loc2]);
+		expect(candidates.get("shared")).toBe(join(loc1, "shared"));
 	});
 
 	it("missing locations are skipped silently", () => {
 		const missing = join(tmp, "does-not-exist");
 		const existing = join(tmp, "loc");
 		mkdirSync(join(existing, "ext-d"), { recursive: true });
-		const result = listCandidates([missing, existing]);
-		expect([...result.keys()]).toEqual(["ext-d"]);
+		const { candidates } = listCandidates([missing, existing]);
+		expect([...candidates.keys()]).toEqual(["ext-d"]);
+	});
+
+	it("treats a location with a root package.json as a single-package candidate (keyed by basename)", () => {
+		const single = join(tmp, "plannotator");
+		mkdirSync(single);
+		writeFileSync(join(single, "package.json"), "{}");
+		// Sibling subdirs must NOT be treated as separate candidates.
+		mkdirSync(join(single, "src"), { recursive: true });
+		const { candidates, warnings } = listCandidates([single]);
+		expect([...candidates.entries()]).toEqual([["plannotator", single]]);
+		expect(warnings).toEqual([]);
+	});
+
+	it("honors an alias on a single-package location", () => {
+		const single = join(tmp, "plannotator");
+		mkdirSync(single);
+		writeFileSync(join(single, "package.json"), "{}");
+		const { candidates, warnings } = listCandidates([{ path: single, name: "plan" }]);
+		expect([...candidates.entries()]).toEqual([["plan", single]]);
+		expect(warnings).toEqual([]);
+	});
+
+	it("warns and ignores an alias on a multi-package container location", () => {
+		const loc = join(tmp, "container");
+		mkdirSync(join(loc, "ext-a"), { recursive: true });
+		mkdirSync(join(loc, "ext-b"), { recursive: true });
+		const { candidates, warnings } = listCandidates([{ path: loc, name: "ignored" }]);
+		expect(new Set(candidates.keys())).toEqual(new Set(["ext-a", "ext-b"]));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toMatch(/alias "ignored" ignored/);
+	});
+
+	it("mixes single-package and multi-package locations", () => {
+		const single = join(tmp, "plannotator");
+		mkdirSync(single);
+		writeFileSync(join(single, "package.json"), "{}");
+		const container = join(tmp, "container");
+		mkdirSync(join(container, "ext-x"), { recursive: true });
+		const { candidates } = listCandidates([single, container]);
+		expect(candidates.get("plannotator")).toBe(single);
+		expect(candidates.get("ext-x")).toBe(join(container, "ext-x"));
 	});
 });
 
@@ -368,6 +445,73 @@ describe("isPinnedGitSpec", () => {
 	});
 });
 
+// ── getRemoteScheme ───────────────────────────────────────────────────────
+
+describe("getRemoteScheme", () => {
+	it("classifies npm: specs as npm", () => {
+		expect(getRemoteScheme("npm:foo")).toBe("npm");
+		expect(getRemoteScheme("npm:@scope/pkg")).toBe("npm");
+		expect(getRemoteScheme("npm:@scope/pkg@1.2.3")).toBe("npm");
+	});
+
+	it("classifies everything else as git", () => {
+		expect(getRemoteScheme("git:github.com/foo/bar")).toBe("git");
+		expect(getRemoteScheme("https://github.com/foo/bar")).toBe("git");
+		expect(getRemoteScheme("ssh://git@github.com/foo/bar")).toBe("git");
+		expect(getRemoteScheme("git@github.com:foo/bar")).toBe("git");
+	});
+});
+
+// ── isPinnedNpmSpec ─────────────────────────────────────────────────────
+
+describe("isPinnedNpmSpec", () => {
+	it("returns false for unpinned npm specs", () => {
+		expect(isPinnedNpmSpec("npm:foo")).toBe(false);
+		expect(isPinnedNpmSpec("npm:@scope/pkg")).toBe(false);
+	});
+
+	it("returns false for @latest dist-tag", () => {
+		expect(isPinnedNpmSpec("npm:foo@latest")).toBe(false);
+		expect(isPinnedNpmSpec("npm:@scope/pkg@latest")).toBe(false);
+	});
+
+	it("returns true for explicit versions", () => {
+		expect(isPinnedNpmSpec("npm:foo@1.2.3")).toBe(true);
+		expect(isPinnedNpmSpec("npm:@scope/pkg@1.2.3")).toBe(true);
+		expect(isPinnedNpmSpec("npm:foo@~2.0.0")).toBe(true);
+	});
+
+	it("returns true for non-`latest` dist-tags", () => {
+		expect(isPinnedNpmSpec("npm:foo@next")).toBe(true);
+		expect(isPinnedNpmSpec("npm:@scope/pkg@beta")).toBe(true);
+	});
+
+	it("does not mistake the scope `@` for a version separator", () => {
+		// Scoped without version: only @ is at index 0.
+		expect(isPinnedNpmSpec("npm:@only-scope/no-version")).toBe(false);
+	});
+
+	it("returns false for non-npm specs", () => {
+		expect(isPinnedNpmSpec("git:github.com/foo/bar@v1")).toBe(false);
+		expect(isPinnedNpmSpec("/abs/path")).toBe(false);
+	});
+});
+
+// ── isPinnedRemoteSpec ───────────────────────────────────────────────────
+
+describe("isPinnedRemoteSpec", () => {
+	it("routes git specs to isPinnedGitSpec", () => {
+		expect(isPinnedRemoteSpec("git:github.com/foo/bar")).toBe(false);
+		expect(isPinnedRemoteSpec("git:github.com/foo/bar@v1")).toBe(true);
+	});
+
+	it("routes npm specs to isPinnedNpmSpec", () => {
+		expect(isPinnedRemoteSpec("npm:foo")).toBe(false);
+		expect(isPinnedRemoteSpec("npm:foo@1.2.3")).toBe(true);
+		expect(isPinnedRemoteSpec("npm:@scope/pkg@latest")).toBe(false);
+	});
+});
+
 // ── scanCloneForCandidates ─────────────────────────────────────────────────
 
 describe("scanCloneForCandidates", () => {
@@ -380,40 +524,58 @@ describe("scanCloneForCandidates", () => {
 	});
 
 	it("returns empty for an empty dir", () => {
-		const result = scanCloneForCandidates(tmp);
-		expect([...result.keys()]).toEqual([]);
+		const { candidates, isMonorepo } = scanCloneForCandidates(tmp);
+		expect([...candidates.keys()]).toEqual([]);
+		expect(isMonorepo).toBe(false);
 	});
 
 	it("detects monorepo via packages/ and walks subdirs", () => {
 		mkdirSync(join(tmp, "packages", "alpha"), { recursive: true });
 		mkdirSync(join(tmp, "packages", "beta"), { recursive: true });
 		writeFileSync(join(tmp, "package.json"), "{}");
-		const result = scanCloneForCandidates(tmp);
-		expect(new Set(result.keys())).toEqual(new Set(["alpha", "beta"]));
-		expect(result.get("alpha")).toBe(join(tmp, "packages", "alpha"));
+		const { candidates, isMonorepo } = scanCloneForCandidates(tmp);
+		expect(new Set(candidates.keys())).toEqual(new Set(["alpha", "beta"]));
+		expect(candidates.get("alpha")).toBe(join(tmp, "packages", "alpha"));
+		expect(isMonorepo).toBe(true);
 	});
 
 	it("skips dotfiles and node_modules under packages/", () => {
 		mkdirSync(join(tmp, "packages", ".hidden"), { recursive: true });
 		mkdirSync(join(tmp, "packages", "node_modules"), { recursive: true });
 		mkdirSync(join(tmp, "packages", "keep"), { recursive: true });
-		const result = scanCloneForCandidates(tmp);
-		expect([...result.keys()]).toEqual(["keep"]);
+		const { candidates } = scanCloneForCandidates(tmp);
+		expect([...candidates.keys()]).toEqual(["keep"]);
 	});
 
 	it("treats a clone without packages/ but with package.json as a single candidate", () => {
 		const clone = join(tmp, "single-pkg-repo");
 		mkdirSync(clone, { recursive: true });
 		writeFileSync(join(clone, "package.json"), "{}");
-		const result = scanCloneForCandidates(clone);
-		expect([...result.entries()]).toEqual([["single-pkg-repo", clone]]);
+		const { candidates, isMonorepo } = scanCloneForCandidates(clone);
+		expect([...candidates.entries()]).toEqual([["single-pkg-repo", clone]]);
+		expect(isMonorepo).toBe(false);
+	});
+
+	it("honors alias on a single-package clone", () => {
+		const clone = join(tmp, "some-repo");
+		mkdirSync(clone, { recursive: true });
+		writeFileSync(join(clone, "package.json"), "{}");
+		const { candidates } = scanCloneForCandidates(clone, "my-alias");
+		expect([...candidates.entries()]).toEqual([["my-alias", clone]]);
+	});
+
+	it("ignores alias on a monorepo clone", () => {
+		mkdirSync(join(tmp, "packages", "alpha"), { recursive: true });
+		const { candidates, isMonorepo } = scanCloneForCandidates(tmp, "ignored");
+		expect([...candidates.keys()]).toEqual(["alpha"]);
+		expect(isMonorepo).toBe(true);
 	});
 
 	it("returns empty when no packages/ and no root package.json", () => {
 		const clone = join(tmp, "nothing");
 		mkdirSync(clone, { recursive: true });
-		const result = scanCloneForCandidates(clone);
-		expect([...result.keys()]).toEqual([]);
+		const { candidates } = scanCloneForCandidates(clone);
+		expect([...candidates.keys()]).toEqual([]);
 	});
 });
 
@@ -445,6 +607,6 @@ describe("loadConfigFrom (remotes)", () => {
 			}),
 		);
 		const result = loadConfigFrom(p, tmp);
-		expect(result.config?.remotes).toEqual(["git:github.com/foo/bar", "git:github.com/baz/qux@v1"]);
+		expect(result.config?.remotes).toEqual([{ spec: "git:github.com/foo/bar" }, { spec: "git:github.com/baz/qux@v1" }]);
 	});
 });

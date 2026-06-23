@@ -101,22 +101,37 @@ Populate one or both lists. Names are resolved against `locations` first, then `
 
 ### `locations` — local directories
 
-One or more directories that contain extension package folders (one-level scan):
+Two layouts are auto-detected per entry:
+
+| Layout | Detected when | Behavior |
+|---|---|---|
+| **Single-package** | the entry itself contains a `package.json` | the entry *is* the extension, keyed by its directory basename (or its `name` alias) |
+| **Multi-package container** | no `package.json` at the entry | one-level subdir scan — each subdirectory is its own candidate, keyed by folder name |
 
 ```json
 {
   "locations": [
-    "~/pi-packages/packages",
-    "~/other-pi-extensions"
+    "~/pi-packages/packages",                          // container of many extensions
+    "~/code/plannotator",                              // single dedicated extension
+    { "path": "~/code/plannotator", "name": "plan" }   // single extension + alias
   ]
 }
 ```
 
-Each `location` is scanned for one-level subdirectories (skipping `.dotfiles` and `node_modules`). First location wins on duplicate folder names. `~/...` expansion is supported.
+String and object forms can be mixed. The object form is `{ "path": "...", "name": "<alias>" }` — the `name` overrides the candidate key used by `--with`. Aliases apply only to single-package locations; if `name` is set on a multi-package container, it is ignored with a startup warning (no single alias can stand in for many subdirs).
 
-### `remotes` — git repos (cloned on demand)
+Dotfiles and `node_modules` are skipped. First location wins on duplicate candidate names. `~/...` expansion is supported.
 
-Git source specs in Pi's standard syntax (same as `pi install`):
+### `remotes` — git repos and npm packages (installed on demand)
+
+Remote source specs in Pi's standard syntax (same as `pi install`). Two schemes are supported:
+
+| Scheme | Example | Where it lands |
+|---|---|---|
+| `git:` / `https://` / `ssh://` / SCP | `git:github.com/foo/bar@v1.2.3` | `~/.pi/agent/git/<host>/<user>/<repo>` |
+| `npm:` | `npm:@plannotator/pi-extension` | `~/.pi/agent/npm/node_modules/<pkg>` |
+
+String and object forms are accepted; the object form lets you alias a single-package install:
 
 ```json
 {
@@ -124,24 +139,29 @@ Git source specs in Pi's standard syntax (same as `pi install`):
   "remotes": [
     "git:github.com/dsshap/pi-packages",
     "git:github.com/foo/bar@v1.2.3",
-    "https://github.com/baz/qux@main"
+    { "spec": "https://github.com/baz/qux@main", "name": "qux-alias" },
+    { "spec": "npm:@plannotator/pi-extension", "name": "plannotator" }
   ]
 }
 ```
 
+As with locations, the alias applies only to single-package installs. For a monorepo clone (one with a `packages/` directory) the alias is ignored with a startup warning.
+
 Each remote is cloned on first use to `~/.pi/agent/git/<host>/<user>/<repo>` (Pi's standard cache — same as `pi install` writes to), and `npm install` runs inside the clone. Subsequent sessions reuse the cache.
 
-**Layout auto-detection.** When walking a clone for candidates:
-  - If `<clone>/packages/` exists → treated as a monorepo; each subdirectory becomes a candidate by basename.
-  - Otherwise, if `<clone>/package.json` exists → the clone root itself is a single candidate keyed by its directory basename.
+**Layout auto-detection.** When walking the installed directory for candidates (applies to both git clones and npm packages):
+  - If `<root>/packages/` exists → treated as a monorepo; each subdirectory becomes a candidate by basename. The remote-level `name` alias does NOT apply.
+  - Otherwise, if `<root>/package.json` exists → the root itself is a single candidate keyed by its `name` alias (if set) or its directory basename. This is the common case for npm packages — e.g. `npm:@plannotator/pi-extension` yields a candidate keyed by `pi-extension` unless you alias it.
 
 **Lazy refresh.** When resolution falls through to a remote during a session, `pi-loader-with` does the following exactly once per remote per session:
 
 | Spec form | Behavior |
 |---|---|
-| Bare (`git:github.com/foo/bar`) | `git fetch + reset --hard FETCH_HEAD` (~500ms). If HEAD moved, `npm install` re-runs inside the clone. |
-| Pinned (`@<ref>`) | No refresh — the on-disk clone is used as-is. (Same convention as `pi install`: any explicit `@ref` is pinned.) |
-| Any spec with `PI_OFFLINE=1` | No network access — use whatever is on disk; error out if the clone is missing. |
+| Bare git (`git:github.com/foo/bar`) | `git fetch + reset --hard FETCH_HEAD` (~500ms). If HEAD moved, `npm install` re-runs inside the clone. |
+| Pinned git (`@<ref>`) | No refresh — the on-disk clone is used as-is. Any explicit `@ref` is pinned (same convention as `pi install`). |
+| Bare npm (`npm:pkg`, `npm:@scope/pkg`, or `@latest` dist-tag) | Re-runs `pm.install(spec)` so npm can resolve to a newer version. |
+| Pinned npm (`npm:pkg@1.2.3`, or any non-`latest` dist-tag like `@next`) | No refresh — the installed package is used as-is. |
+| Any spec with `PI_OFFLINE=1` | No network access — use whatever is on disk; error out if the install is missing. |
 
 **Failure mode.** Any clone/fetch/reset/`npm install` error is reported via the startup summary and the matching name fails to resolve (hard fail per spec, not per name).
 
@@ -171,15 +191,16 @@ Manage the config without hand-editing JSON. Changes take effect on the **next**
 
 | Command | Effect |
 |---|---|
-| `/loader-with` | List the current `locations` and `remotes`, plus the resolved config path. |
-| `/loader-with add <value>` | Append `<value>`. Local vs remote is auto-detected (see below). Idempotent. |
-| `/loader-with remove <value>` | Remove a matching entry from either list. Errors if nothing matched. |
+| `/loader-with` | List the current `locations` and `remotes`, plus the resolved config path. Aliased entries are shown as `<value>  (as <name>)`. |
+| `/loader-with add <value> [as <name>]` | Append `<value>`. Local vs remote is auto-detected. With `as <name>` (or `--name <name>`), the entry is stored in object form with an alias. Re-adding the same `<value>` with a different alias updates the entry in place. |
+| `/loader-with remove <value>` | Remove a matching entry. Matches against the stored path/spec **or** the alias — so `/loader-with remove plan` removes the entry named `plan`. |
 | `/loader-with help` | Show usage. |
 
 **Auto-detection.** `add` looks at the input:
 
 | Looks like | Goes into |
 |---|---|
+| `npm:...` | `remotes` |
 | `git:...`, `https://...`, `http://...`, `ssh://...`, `git://...` | `remotes` |
 | SCP-style `git@host:user/repo` | `remotes` |
 | Everything else (absolute, `~/...`, relative, bare name) | `locations` after `~` expansion + cwd resolution; must exist as a directory |
@@ -188,20 +209,25 @@ Examples:
 
 ```
 /loader-with add ~/code/pi-extensions
+/loader-with add ~/code/plannotator as plan                   # alias a single-package location
 /loader-with add git:github.com/foo/bar@v1.2.3
+/loader-with add npm:@plannotator/pi-extension as plannotator # npm spec + alias
+/loader-with add npm:left-pad@1.3.0
+/loader-with add git:github.com/foo/bar --name fb             # `--name` flag works too
+/loader-with remove plan                                      # remove by alias
 /loader-with remove git:github.com/foo/bar@v1.2.3
-/loader-with                                  # show current config
+/loader-with                                                  # show current config
 ```
 
 **Remove matching is forgiving.** It tries the verbatim string, the `~`-expanded form, and the cwd-resolved absolute form, so `~/foo`, `/Users/you/foo`, and `./foo` all remove the same stored entry.
 
 ## Name resolution
 
-Three tiers, first tier with a single match wins:
+Candidate keys come from either a directory basename or an explicit `name` alias (see `locations`/`remotes` above). Resolution against the candidate map is three tiers, first tier with a single match wins:
 
 | Tier | Rule | Example |
 |---|---|---|
-| 1 | Exact folder name | `pi-pi-experts` → `pi-pi-experts` |
+| 1 | Exact key | `pi-pi-experts` → `pi-pi-experts`; `plan` → aliased entry |
 | 2 | Case-insensitive exact | `PI-Pi-Experts` → `pi-pi-experts` |
 | 3 | Case-insensitive substring | `experts` → `pi-pi-experts` |
 

@@ -6,6 +6,7 @@ import {
 	addToConfig,
 	detectSpecKind,
 	formatList,
+	parseAddArgs,
 	parseSubcommand,
 	readConfigRaw,
 	removeFromConfig,
@@ -19,6 +20,13 @@ describe("detectSpecKind", () => {
 	it("classifies git: prefix as remote", () => {
 		expect(detectSpecKind("git:github.com/foo/bar")).toBe("remote");
 		expect(detectSpecKind("git:github.com/foo/bar@v1")).toBe("remote");
+	});
+
+	it("classifies npm: prefix as remote", () => {
+		expect(detectSpecKind("npm:foo")).toBe("remote");
+		expect(detectSpecKind("npm:@scope/pkg")).toBe("remote");
+		expect(detectSpecKind("npm:@plannotator/pi-extension")).toBe("remote");
+		expect(detectSpecKind("npm:foo@1.2.3")).toBe("remote");
 	});
 
 	it("classifies https://, http://, ssh://, git:// as remote", () => {
@@ -135,6 +143,20 @@ describe("readConfigRaw / writeConfigRaw", () => {
 		expect(c).toEqual({ locations: ["/a", "/b"], remotes: ["git:x"] });
 	});
 
+	it("preserves object entries with aliases, drops malformed objects", () => {
+		const p = join(tmp, "objs.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				locations: [{ path: "/p1", name: "alpha" }, { path: "/p2" }, { name: "orphan" }, "/p3"],
+				remotes: [{ spec: "git:foo/bar", name: "fb" }, { spec: "git:no-name" }],
+			}),
+		);
+		const c = readConfigRaw(p);
+		expect(c.locations).toEqual([{ path: "/p1", name: "alpha" }, { path: "/p2" }, "/p3"]);
+		expect(c.remotes).toEqual([{ spec: "git:foo/bar", name: "fb" }, { spec: "git:no-name" }]);
+	});
+
 	it("writes back a normalized config and creates parent dirs", () => {
 		const p = join(tmp, "nested", "config.json");
 		writeConfigRaw(p, { locations: ["/a"], remotes: ["git:x"] });
@@ -193,6 +215,17 @@ describe("addToConfig", () => {
 		expect(readConfigRaw(cfgPath).remotes).toEqual(["git:github.com/foo/bar@v1"]);
 	});
 
+	it("adds an npm spec to remotes verbatim (with alias)", () => {
+		const r = addToConfig(cfgPath, "npm:@plannotator/pi-extension", tmp, "plannotator");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.result.kind).toBe("remote");
+			expect(r.result.stored).toBe("npm:@plannotator/pi-extension");
+			expect(r.result.name).toBe("plannotator");
+		}
+		expect(readConfigRaw(cfgPath).remotes).toEqual([{ spec: "npm:@plannotator/pi-extension", name: "plannotator" }]);
+	});
+
 	it("reports added=false when entry is already present", () => {
 		const dir = join(tmp, "ext-dir");
 		mkdirSync(dir);
@@ -218,6 +251,42 @@ describe("addToConfig", () => {
 			locations: ["/keep", dir],
 			remotes: ["git:keep/me"],
 		});
+	});
+
+	it("stores an object entry when name is provided (local)", () => {
+		const dir = join(tmp, "plannotator");
+		mkdirSync(dir);
+		const r = addToConfig(cfgPath, dir, tmp, "plan");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.result.added).toBe(true);
+			expect(r.result.name).toBe("plan");
+		}
+		expect(readConfigRaw(cfgPath).locations).toEqual([{ path: dir, name: "plan" }]);
+	});
+
+	it("stores an object entry when name is provided (remote)", () => {
+		const r = addToConfig(cfgPath, "git:github.com/foo/bar", tmp, "fb");
+		expect(r.ok).toBe(true);
+		expect(readConfigRaw(cfgPath).remotes).toEqual([{ spec: "git:github.com/foo/bar", name: "fb" }]);
+	});
+
+	it("updates an existing entry in place when alias changes", () => {
+		const dir = join(tmp, "ext");
+		mkdirSync(dir);
+		addToConfig(cfgPath, dir, tmp); // no alias
+		addToConfig(cfgPath, dir, tmp, "renamed");
+		expect(readConfigRaw(cfgPath).locations).toEqual([{ path: dir, name: "renamed" }]);
+	});
+
+	it("reports added=false when path+alias match an existing entry exactly", () => {
+		const dir = join(tmp, "ext");
+		mkdirSync(dir);
+		addToConfig(cfgPath, dir, tmp, "x");
+		const r = addToConfig(cfgPath, dir, tmp, "x");
+		expect(r.ok).toBe(true);
+		if (r.ok) expect(r.result.added).toBe(false);
+		expect(readConfigRaw(cfgPath).locations).toEqual([{ path: dir, name: "x" }]);
 	});
 });
 
@@ -263,6 +332,27 @@ describe("removeFromConfig", () => {
 		const r = removeFromConfig(cfgPath, "/nope", tmp);
 		expect(r.ok).toBe(false);
 		if (!r.ok) expect(r.error).toMatch(/no matching entry/);
+	});
+
+	it("removes an object-form entry by path", () => {
+		writeConfigRaw(cfgPath, { locations: [{ path: "/abs/plannotator", name: "plan" }], remotes: [] });
+		const r = removeFromConfig(cfgPath, "/abs/plannotator", tmp);
+		expect(r.ok).toBe(true);
+		expect(readConfigRaw(cfgPath).locations).toEqual([]);
+	});
+
+	it("removes an object-form entry by alias", () => {
+		writeConfigRaw(cfgPath, { locations: [{ path: "/abs/plannotator", name: "plan" }], remotes: [] });
+		const r = removeFromConfig(cfgPath, "plan", tmp);
+		expect(r.ok).toBe(true);
+		expect(readConfigRaw(cfgPath).locations).toEqual([]);
+	});
+
+	it("removes an object-form remote by alias", () => {
+		writeConfigRaw(cfgPath, { locations: [], remotes: [{ spec: "git:github.com/foo/bar", name: "fb" }] });
+		const r = removeFromConfig(cfgPath, "fb", tmp);
+		expect(r.ok).toBe(true);
+		expect(readConfigRaw(cfgPath).remotes).toEqual([]);
 	});
 
 	it("can remove an entry that appears in both locations and remotes", () => {
@@ -313,5 +403,51 @@ describe("formatList", () => {
 		const out = formatList({ locations: [], remotes: [] }, "/p");
 		expect(out).toContain("locations (0):\n  (none)");
 		expect(out).toContain("remotes (0):\n  (none)");
+	});
+
+	it("renders aliased entries with the `(as <name>)` suffix", () => {
+		const out = formatList(
+			{
+				locations: [{ path: "/a", name: "plan" }, "/b"],
+				remotes: [{ spec: "git:foo/bar", name: "fb" }],
+			},
+			"/cfg",
+		);
+		expect(out).toContain("  - /a  (as plan)");
+		expect(out).toContain("  - /b");
+		expect(out).toContain("  - git:foo/bar  (as fb)");
+	});
+});
+
+// ── parseAddArgs ────────────────────────────────────────────────────────
+
+describe("parseAddArgs", () => {
+	it("returns just the value when no suffix", () => {
+		expect(parseAddArgs("~/code/foo")).toEqual({ value: "~/code/foo" });
+	});
+
+	it("parses `<value> as <name>`", () => {
+		expect(parseAddArgs("~/code/plannotator as plan")).toEqual({ value: "~/code/plannotator", name: "plan" });
+	});
+
+	it("parses `<value> --name <name>`", () => {
+		expect(parseAddArgs("git:github.com/foo/bar --name fb")).toEqual({
+			value: "git:github.com/foo/bar",
+			name: "fb",
+		});
+	});
+
+	it("is case-insensitive on the `as` keyword", () => {
+		expect(parseAddArgs("/foo AS bar")).toEqual({ value: "/foo", name: "bar" });
+	});
+
+	it("only consumes a trailing `as` clause (path containing 'as' word in the middle is preserved)", () => {
+		// Trailing `as plan` should still parse — the regex is non-greedy on value.
+		expect(parseAddArgs("/some path as plan")).toEqual({ value: "/some path", name: "plan" });
+	});
+
+	it("returns empty value for empty input", () => {
+		expect(parseAddArgs("")).toEqual({ value: "" });
+		expect(parseAddArgs("   ")).toEqual({ value: "" });
 	});
 });

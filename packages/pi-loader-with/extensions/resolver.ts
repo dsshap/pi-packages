@@ -5,13 +5,42 @@
 
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
+/**
+ * A `locations[]` entry as it appears on disk: either a plain string path or
+ * an object with an optional `name` alias. The alias overrides the candidate
+ * key used by `--with` name resolution.
+ */
+export type RawLocationEntry = string | { path: string; name?: string };
+
+/**
+ * A `remotes[]` entry as it appears on disk: either a plain string spec or an
+ * object with an optional `name` alias.
+ */
+export type RawRemoteEntry = string | { spec: string; name?: string };
+
+/** Normalized location after `~` expansion and absolute-path resolution. */
+export interface NormalizedLocation {
+	/** Absolute path on disk. */
+	path: string;
+	/** Optional alias overriding the default candidate key (basename / discovered name). */
+	name?: string;
+}
+
+/** Normalized remote spec entry. */
+export interface NormalizedRemote {
+	/** Git source spec (verbatim, in Pi's `pi install` format). */
+	spec: string;
+	/** Optional alias overriding the default candidate key. */
+	name?: string;
+}
+
 export interface ResourcesConfig {
-	locations: string[];
-	remotes: string[];
+	locations: NormalizedLocation[];
+	remotes: NormalizedRemote[];
 }
 
 // ── expandHome ────────────────────────────────────────────────────────────
@@ -86,13 +115,60 @@ export function configSearchPaths(env: NodeJS.ProcessEnv, homeDir: string): stri
 	return envPath ? [envPath, globalPath] : [globalPath];
 }
 
+// ── normalizeLocationEntry / normalizeRemoteEntry ─────────────────────────
+
+/**
+ * Normalize a raw `locations[]` entry into `{ path, name? }`.
+ * String entries become `{ path: <resolved> }`. Object entries must have a
+ * non-empty `path`; any other field is ignored. Returns `null` for invalid
+ * input (so callers can drop it silently).
+ *
+ * `~` is expanded and relative paths are resolved against `baseDir` (typically
+ * the directory of the config file).
+ */
+export function normalizeLocationEntry(raw: unknown, baseDir: string): NormalizedLocation | null {
+	let path: string | undefined;
+	let name: string | undefined;
+	if (typeof raw === "string") {
+		path = raw;
+	} else if (raw && typeof raw === "object") {
+		const o = raw as { path?: unknown; name?: unknown };
+		if (typeof o.path === "string") path = o.path;
+		if (typeof o.name === "string" && o.name.length > 0) name = o.name;
+	}
+	if (!path || path.length === 0) return null;
+	const expanded = expandHome(path);
+	const abs = isAbsolute(expanded) ? expanded : resolve(baseDir, expanded);
+	return name ? { path: abs, name } : { path: abs };
+}
+
+/**
+ * Normalize a raw `remotes[]` entry into `{ spec, name? }`.
+ * String entries become `{ spec }`. Object entries must have a non-empty
+ * `spec`. Returns `null` for invalid input.
+ */
+export function normalizeRemoteEntry(raw: unknown): NormalizedRemote | null {
+	let spec: string | undefined;
+	let name: string | undefined;
+	if (typeof raw === "string") {
+		spec = raw;
+	} else if (raw && typeof raw === "object") {
+		const o = raw as { spec?: unknown; name?: unknown };
+		if (typeof o.spec === "string") spec = o.spec;
+		if (typeof o.name === "string" && o.name.length > 0) name = o.name;
+	}
+	if (!spec || spec.length === 0) return null;
+	return name ? { spec, name } : { spec };
+}
+
 // ── loadConfigFrom ────────────────────────────────────────────────────────
 
 /**
  * Load and validate config from a single path.
  * Missing → { config: null }.
  * Malformed JSON → { config: null, warning }.
- * Valid → expand `~` in each `locations` entry, drop non-strings.
+ * Valid → expand `~` in each `locations` entry, normalize both string and
+ * object forms, drop invalid entries.
  */
 export function loadConfigFrom(path: string, _homeDir: string): { config: ResourcesConfig | null; warning?: string } {
 	let raw: string;
@@ -111,15 +187,19 @@ export function loadConfigFrom(path: string, _homeDir: string): { config: Resour
 		};
 	}
 	const obj = parsed as Record<string, unknown>;
+	const baseDir = dirname(path);
 	const rawLocs = Array.isArray(obj?.locations) ? (obj.locations as unknown[]) : [];
-	const locations = rawLocs
-		.filter((l): l is string => typeof l === "string")
-		.map((l) => {
-			const expanded = expandHome(l);
-			return isAbsolute(expanded) ? expanded : resolve(dirname(path), expanded);
-		});
+	const locations: NormalizedLocation[] = [];
+	for (const r of rawLocs) {
+		const n = normalizeLocationEntry(r, baseDir);
+		if (n) locations.push(n);
+	}
 	const rawRemotes = Array.isArray(obj?.remotes) ? (obj.remotes as unknown[]) : [];
-	const remotes = rawRemotes.filter((r): r is string => typeof r === "string" && r.length > 0);
+	const remotes: NormalizedRemote[] = [];
+	for (const r of rawRemotes) {
+		const n = normalizeRemoteEntry(r);
+		if (n) remotes.push(n);
+	}
 	return { config: { locations, remotes } };
 }
 
@@ -173,35 +253,78 @@ export function ensureDefaultConfig(searchPaths: string[], homeDir: string): Ens
 
 // ── listCandidates ────────────────────────────────────────────────────────
 
+export interface ListCandidatesResult {
+	/** Candidate map: short-name → absolute extension dir. */
+	candidates: Map<string, string>;
+	/** Non-fatal warnings (e.g. alias ignored because location is multi-package). */
+	warnings: string[];
+}
+
 /**
- * For each location (in order), list one-level subdirectories (skip dotfiles
- * and node_modules). Returns a Map of basename → absolute path.
- * First location wins on duplicate folder names.
- * Missing locations are skipped silently.
+ * Walk each location and collect candidate extensions.
+ *
+ * For each location, the layout is auto-detected (same convention as
+ * `scanCloneForCandidates`):
+ *   1. If the location itself contains a `package.json`, treat it as a
+ *      single dedicated extension. Candidate key = `entry.name ?? basename(path)`.
+ *   2. Otherwise, list one-level subdirectories (skipping dotfiles and
+ *      `node_modules`). Each subdir is a candidate keyed by its folder name.
+ *      In this mode `entry.name` does not apply (a single alias cannot stand
+ *      in for a directory of many extensions) and a warning is emitted.
+ *
+ * Locations are processed in declared order; the first location wins on
+ * candidate-name collisions. Missing or unreadable locations are skipped
+ * silently.
+ *
+ * Accepts both string entries (legacy) and `NormalizedLocation` objects.
  */
-export function listCandidates(locations: string[]): Map<string, string> {
+export function listCandidates(locations: ReadonlyArray<string | NormalizedLocation>): ListCandidatesResult {
 	const out = new Map<string, string>();
-	for (const loc of locations) {
+	const warnings: string[] = [];
+
+	for (const raw of locations) {
+		const entry: NormalizedLocation = typeof raw === "string" ? { path: raw } : raw;
+		const loc = entry.path;
+
+		// (1) Single-package: location itself contains a package.json.
+		let isSinglePackage = false;
+		try {
+			isSinglePackage = statSync(join(loc, "package.json")).isFile();
+		} catch {
+			isSinglePackage = false;
+		}
+		if (isSinglePackage) {
+			const key = entry.name ?? basename(loc);
+			if (!out.has(key)) out.set(key, loc);
+			continue;
+		}
+
+		// (2) Multi-package: walk one level deep.
+		if (entry.name) {
+			warnings.push(
+				`location ${loc}: alias "${entry.name}" ignored — the directory has no package.json so it's treated as a multi-package container; each subdirectory is its own candidate by name`,
+			);
+		}
 		let entries: string[];
 		try {
 			entries = readdirSync(loc);
 		} catch {
 			continue;
 		}
-		for (const entry of entries) {
-			if (entry.startsWith(".") || entry === "node_modules") continue;
-			if (out.has(entry)) continue; // first location wins
-			const fullPath = join(loc, entry);
+		for (const child of entries) {
+			if (child.startsWith(".") || child === "node_modules") continue;
+			if (out.has(child)) continue; // first location wins
+			const fullPath = join(loc, child);
 			try {
 				const st = statSync(fullPath);
 				if (!st.isDirectory()) continue;
 			} catch {
 				continue;
 			}
-			out.set(entry, fullPath);
+			out.set(child, fullPath);
 		}
 	}
-	return out;
+	return { candidates: out, warnings };
 }
 
 // ── resolveName ───────────────────────────────────────────────────────────
@@ -294,20 +417,70 @@ export function isPinnedGitSpec(spec: string): boolean {
 	return at > 0 && at < tail.length - 1;
 }
 
+/** Remote source schemes that the loader can resolve via Pi's PackageManager. */
+export type RemoteScheme = "npm" | "git";
+
+/**
+ * Classify a remote spec. `npm:` prefix → `npm`; everything else (git:,
+ * https://, ssh://, git://, SCP-style) → `git`. Mirrors Pi's `parseSource()`
+ * convention from `@earendil-works/pi-coding-agent`.
+ */
+export function getRemoteScheme(spec: string): RemoteScheme {
+	return spec.startsWith("npm:") ? "npm" : "git";
+}
+
+/**
+ * Detect whether an `npm:` spec is pinned to a specific version.
+ *
+ *   npm:pkg                  → unpinned
+ *   npm:@scope/pkg           → unpinned (leading `@` is the scope marker)
+ *   npm:pkg@latest           → unpinned (`latest` is a moving dist-tag)
+ *   npm:pkg@1.2.3            → pinned
+ *   npm:@scope/pkg@1.2.3     → pinned
+ *   npm:@scope/pkg@next      → pinned (any explicit dist-tag besides `latest`)
+ */
+export function isPinnedNpmSpec(spec: string): boolean {
+	if (!spec.startsWith("npm:")) return false;
+	const body = spec.slice(4);
+	// Scoped packages begin with `@` — that first `@` is the scope marker,
+	// not a version separator. The version, if any, is after the LAST `@`
+	// at index > 0.
+	const lastAt = body.lastIndexOf("@");
+	if (lastAt <= 0) return false;
+	const version = body.slice(lastAt + 1);
+	return version.length > 0 && version !== "latest";
+}
+
+/**
+ * Unified "is this spec pinned?" check across both schemes. Used by the
+ * loader to decide whether to refresh a remote on first use this session.
+ */
+export function isPinnedRemoteSpec(spec: string): boolean {
+	return getRemoteScheme(spec) === "npm" ? isPinnedNpmSpec(spec) : isPinnedGitSpec(spec);
+}
+
 // ── scanCloneForCandidates ────────────────────────────────────────────────
+
+export interface ScanCloneResult {
+	/** Candidate map: short-name → absolute extension dir within the clone. */
+	candidates: Map<string, string>;
+	/** True iff the clone was a multi-package monorepo (`packages/` layout). */
+	isMonorepo: boolean;
+}
 
 /**
  * Given a cloned remote's root directory, derive a candidate map by basename.
  *
  * Auto-detects layout:
  *  - If `<root>/packages/` exists → walk it as a monorepo (one-level subdirs).
+ *    `alias` does NOT apply (a single alias cannot stand in for many sub-packages).
  *  - Else if `<root>/package.json` exists → treat the clone itself as a single
- *    package, keyed by its directory basename.
+ *    package, keyed by `alias` if provided, else its directory basename.
  *  - Otherwise → empty map.
  *
  * Same filtering as `listCandidates`: skip dotfiles and `node_modules`.
  */
-export function scanCloneForCandidates(cloneRoot: string): Map<string, string> {
+export function scanCloneForCandidates(cloneRoot: string, alias?: string): ScanCloneResult {
 	const out = new Map<string, string>();
 	const pkgsDir = join(cloneRoot, "packages");
 	let hasPackagesDir = false;
@@ -321,7 +494,7 @@ export function scanCloneForCandidates(cloneRoot: string): Map<string, string> {
 		try {
 			entries = readdirSync(pkgsDir);
 		} catch {
-			return out;
+			return { candidates: out, isMonorepo: true };
 		}
 		for (const entry of entries) {
 			if (entry.startsWith(".") || entry === "node_modules") continue;
@@ -333,17 +506,17 @@ export function scanCloneForCandidates(cloneRoot: string): Map<string, string> {
 			}
 			if (!out.has(entry)) out.set(entry, fullPath);
 		}
-		return out;
+		return { candidates: out, isMonorepo: true };
 	}
 
 	try {
 		statSync(join(cloneRoot, "package.json"));
 	} catch {
-		return out;
+		return { candidates: out, isMonorepo: false };
 	}
-	const name = cloneRoot.split("/").filter(Boolean).pop();
-	if (name) out.set(name, cloneRoot);
-	return out;
+	const key = alias ?? basename(cloneRoot);
+	if (key) out.set(key, cloneRoot);
+	return { candidates: out, isMonorepo: false };
 }
 
 // ── internal ──────────────────────────────────────────────────────────────

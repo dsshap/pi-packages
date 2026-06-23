@@ -5,7 +5,19 @@ plan-build-review:
       prompt: "Plan the implementation for: $INPUT"
     - agent: builder
       prompt: "Implement the following plan:\n\n$INPUT"
-    - agent: reviewer
+    - agent: code-reviewer
+      prompt: "Review this implementation for bugs, style, and correctness:\n\n$INPUT"
+
+plan-reviewer-build-review:
+  description: "Plan, critique + refine, implement, and review"
+  steps:
+    - agent: planner
+      prompt: "Plan the implementation for: $INPUT"
+    - agent: plan-reviewer
+      prompt: "Critically review this implementation plan. Challenge assumptions, find gaps and identify improvements. Revise the implementation plan based on the findings:\n\n$INPUT\n\nOriginal request: $ORIGINAL"
+    - agent: builder
+      prompt: "Implement the following plan:\n\n$INPUT"
+    - agent: code-reviewer
       prompt: "Review this implementation for bugs, style, and correctness:\n\n$INPUT"
 
 plan-build:
@@ -45,5 +57,5 @@ full-review:
       prompt: "Based on this analysis, create a plan:\n\n$INPUT"
     - agent: builder
       prompt: "Implement this plan:\n\n$INPUT"
-    - agent: reviewer
+    - agent: code-reviewer
       prompt: "Review this implementation:\n\n$INPUT"

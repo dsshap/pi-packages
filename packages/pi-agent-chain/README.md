@@ -34,10 +34,11 @@ pi -e npm:@dsshap/pi-agent-chain
 
 ## Commands
 
-| Command         | What it does                       |
-| --------------- | ---------------------------------- |
-| `/chain`        | Switch the active chain            |
-| `/chain-list`   | List all available chains          |
+| Command       | What it does                                                |
+| ------------- | ----------------------------------------------------------- |
+| `/chain`      | Switch the active chain                                     |
+| `/chain-list` | List all available chains                                   |
+| `/chain-send` | Send a message or reset command to one or more subagents    |
 
 ## Bundled agents
 
@@ -45,7 +46,7 @@ Ship in `agents/` and are auto-discovered:
 
 - **planner** — architecture and implementation planning
 - **builder** — implementation and code generation
-- **reviewer** — code review and quality checks
+- **code-reviewer** — code review and quality checks
 - **plan-reviewer** — plan critic; challenges and validates plans
 - **scout** — fast recon and codebase exploration
 - **documenter** — documentation and README generation
@@ -58,6 +59,7 @@ Ship in `agents/` and are auto-discovered:
 Defined in `agents/agent-chain.yaml`:
 
 - **plan-build-review** — Plan → Build → Review (the standard dev cycle)
+- **plan-reviewer-build-review** — Plan → Critique/Refine → Build → Review
 - **plan-build** — Plan → Build (fast two-step)
 - **scout-flow** — Scout → Scout → Scout (triple deep recon)
 - **plan-review-plan** — Plan → Critique → Revise (iterative planning)
@@ -83,7 +85,7 @@ my-chain:
       prompt: "Plan: $INPUT"
     - agent: builder
       prompt: "Build this plan:\n\n$INPUT"
-    - agent: reviewer
+    - agent: code-reviewer
       prompt: "Review:\n\n$INPUT\n\nOriginal task: $ORIGINAL"
 ```
 
@@ -137,13 +139,16 @@ pi --mode json -p --no-extensions \
    --tools <agent.tools> \
    --thinking off \
    --append-system-prompt <agent.systemPrompt> \
-   --session .pi/agent-sessions/chain-<agent>.json \
+   --session .pi/agent-sessions/<parent-session-id>/chain-<agent>.json \
    [-c if session exists] \
    <resolved prompt>
 ```
 
-Subprocesses inherit your env. Session files are wiped at `session_start`
-(launch and `/new`) so each Pi session begins fresh.
+Subprocesses inherit your env. Subagent session files are scoped by the parent
+Pi session id, so different parent sessions/tabs in the same repo do not race
+on the same `chain-<agent>.json` files. `/new` naturally starts a fresh
+namespace because it creates a new parent session id; `/resume` and `/reload`
+reuse the namespace for the active parent session.
 
 ## License
 

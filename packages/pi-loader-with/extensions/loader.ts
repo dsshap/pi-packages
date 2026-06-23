@@ -9,7 +9,7 @@
  *  - loadAndRunExtension()    — orchestrate load + run for one bundle path
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,41 +176,140 @@ export interface LoadFactoryResult {
 	manifest: PiManifest;
 }
 
+export interface LoadFactoryFailure {
+	factory?: undefined;
+	manifest: PiManifest;
+	/**
+	 * Diagnostics gathered while walking candidate entries, in priority order.
+	 * Each entry records the candidate path and the reason it was rejected.
+	 */
+	attempts: Array<{ path: string; reason: string }>;
+}
+
+/**
+ * Expand a directory candidate into ordered file candidates: `package.json#main`
+ * (or `module` / `exports."."`), then the conventional `index.{ts,js}` and
+ * `extensions/index.{ts,js}` files. Used to handle manifest entries like
+ * `pi.extensions: ["./"]` that point at a directory rather than a file.
+ */
+function expandDirectoryCandidate(dirAbs: string): string[] {
+	const out: string[] = [];
+	try {
+		const pkgJsonPath = join(dirAbs, "package.json");
+		if (existsSync(pkgJsonPath)) {
+			const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as {
+				main?: unknown;
+				module?: unknown;
+				exports?: unknown;
+			};
+			const mains: string[] = [];
+			if (typeof pkg.main === "string") mains.push(pkg.main);
+			if (typeof pkg.module === "string") mains.push(pkg.module);
+			if (pkg.exports && typeof pkg.exports === "object") {
+				const exp = pkg.exports as Record<string, unknown>;
+				const dot = exp["."];
+				if (typeof dot === "string") mains.push(dot);
+				else if (dot && typeof dot === "object") {
+					const dotObj = dot as Record<string, unknown>;
+					for (const key of ["import", "default", "require"]) {
+						const v = dotObj[key];
+						if (typeof v === "string") mains.push(v);
+					}
+				}
+			}
+			for (const m of mains) out.push(resolve(dirAbs, m));
+		}
+	} catch {
+		// fall through to conventional names
+	}
+	for (const rel of FALLBACK_ENTRIES) out.push(join(dirAbs, rel));
+	return out;
+}
+
 /**
  * Resolve and import the factory function from a bundle directory.
  *
  * Resolution order:
- *  1. `package.json` → `pi.extensions[0]` (resolved relative to bundle dir)
- *  2. Fallback list: index.ts, extensions/index.ts, extensions/index.js, index.js
+ *  1. `package.json` → `pi.extensions[0]` (resolved relative to bundle dir).
+ *     If that path resolves to a directory (e.g. `pi.extensions: ["./"]`), it
+ *     is expanded to `package.json#main` and the conventional `index.{ts,js}`
+ *     files inside it.
+ *  2. Fallback list at the bundle root: index.ts, extensions/index.ts,
+ *     extensions/index.js, index.js.
  *
- * Returns undefined if no factory is found (all candidates tried).
- * On success, the resolved `PiManifest` (including any `pi.prompts` /
- * `pi.skills` paths) is included for the caller to contribute to Pi's
- * resource discovery.
+ * On success returns a `LoadFactoryResult` plus the resolved `PiManifest`
+ * (including any `pi.prompts` / `pi.skills` paths) so the caller can
+ * contribute them to Pi's resource discovery.
+ *
+ * On failure returns a `LoadFactoryFailure` with per-candidate diagnostics
+ * so callers can surface a useful error message instead of swallowing the
+ * underlying import error.
  */
-export async function loadFactory(bundlePath: string): Promise<LoadFactoryResult | undefined> {
+export async function loadFactory(bundlePath: string): Promise<LoadFactoryResult | LoadFactoryFailure> {
 	const loader = getJitiLoader();
 	const absBundle = resolve(bundlePath);
 	const manifest = readManifest(absBundle);
 
-	// Collect candidate entry paths in priority order.
-	const candidates: string[] = [];
-	if (manifest.extensions[0]) candidates.push(manifest.extensions[0]);
-	for (const rel of FALLBACK_ENTRIES) candidates.push(join(absBundle, rel));
+	// Build candidate entry paths in priority order. Directory candidates are
+	// expanded inline so the user gets a sensible attempt log when no entry works.
+	const rawCandidates: string[] = [];
+	if (manifest.extensions[0]) rawCandidates.push(manifest.extensions[0]);
+	for (const rel of FALLBACK_ENTRIES) rawCandidates.push(join(absBundle, rel));
 
+	const candidates: string[] = [];
+	const seen = new Set<string>();
+	for (const c of rawCandidates) {
+		let expanded: string[];
+		try {
+			const st = statSync(c);
+			expanded = st.isDirectory() ? expandDirectoryCandidate(c) : [c];
+		} catch {
+			expanded = [c];
+		}
+		for (const e of expanded) {
+			if (seen.has(e)) continue;
+			seen.add(e);
+			candidates.push(e);
+		}
+	}
+
+	const attempts: Array<{ path: string; reason: string }> = [];
 	for (const candidate of candidates) {
-		if (!existsSync(candidate)) continue;
+		if (!existsSync(candidate)) {
+			attempts.push({ path: candidate, reason: "file not found" });
+			continue;
+		}
 		try {
 			const mod = await loader.import(candidate, { default: true });
 			if (typeof mod === "function") {
 				return { factory: mod as ExtensionFactory, entryPath: candidate, manifest };
 			}
-		} catch {
-			// try next candidate
+			attempts.push({
+				path: candidate,
+				reason: `default export is not a function (got ${typeof mod})`,
+			});
+		} catch (e) {
+			attempts.push({
+				path: candidate,
+				reason: `import threw: ${e instanceof Error ? e.message : String(e)}`,
+			});
 		}
 	}
 
-	return undefined;
+	return { manifest, attempts };
+}
+
+/**
+ * Format `loadFactory` failure diagnostics into a single multi-line message.
+ * Exported for unit testing.
+ */
+export function formatLoadFailure(bundlePath: string, attempts: Array<{ path: string; reason: string }>): string {
+	if (attempts.length === 0) {
+		return `No factory function found in ${bundlePath} (no candidate entry files tried)`;
+	}
+	const lines = [`No factory function found in ${bundlePath}. Tried:`];
+	for (const a of attempts) lines.push(`    - ${a.path}: ${a.reason}`);
+	return lines.join("\n");
 }
 
 // ── buildPassthroughShim ──────────────────────────────────────────────────
@@ -265,17 +364,17 @@ export type LoadAndRunResult =
  */
 export async function loadAndRunExtension(bundlePath: string, realPi: ExtensionAPI): Promise<LoadAndRunResult> {
 	try {
-		const found = await loadFactory(bundlePath);
-		if (!found) {
-			return { ok: false, error: `No factory function found in ${bundlePath}` };
+		const result = await loadFactory(bundlePath);
+		if (!result.factory) {
+			return { ok: false, error: formatLoadFailure(bundlePath, result.attempts) };
 		}
 		const shim = buildPassthroughShim(realPi);
-		await found.factory(shim);
+		await result.factory(shim);
 		return {
 			ok: true,
-			entryPath: found.entryPath,
-			promptPaths: found.manifest.promptPaths,
-			skillPaths: found.manifest.skillPaths,
+			entryPath: result.entryPath,
+			promptPaths: result.manifest.promptPaths,
+			skillPaths: result.manifest.skillPaths,
 		};
 	} catch (e) {
 		return {

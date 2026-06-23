@@ -1,24 +1,29 @@
 /**
  * Remote-source handling for the `--with` flag.
  *
- * Delegates clone/install bookkeeping to Pi's own `DefaultPackageManager` so
- * remotes land in the same `~/.pi/agent/git/<host>/<user>/<repo>` cache that
- * `pi install` uses, run `npm install` automatically, and respect Pi's
- * conventions for source spec parsing.
+ * Delegates install bookkeeping to Pi's own `DefaultPackageManager`, so
+ * remotes land in the same cache `pi install` uses and respect Pi's spec-
+ * parsing conventions. Two schemes are supported:
+ *
+ *   - `git:` / `https://` / `ssh://` / SCP-style → git clone
+ *      (`~/.pi/agent/git/<host>/<user>/<repo>`)
+ *   - `npm:` → npm package install
+ *      (`~/.pi/agent/npm/node_modules/<pkg>`)
  *
  * Refresh is *lazy*: on the first time a session asks for candidates from a
- * given remote, if the spec is not pinned (no `@<ref>`) and `PI_OFFLINE` is
- * not set, we shell out to `git fetch + reset --hard` against the existing
- * clone. If HEAD moved we re-run `npm install` to pick up dependency changes.
+ * given remote, if the spec is not pinned and `PI_OFFLINE` is not set:
+ *   - git: `git fetch + reset --hard` against the existing clone; if HEAD
+ *     moved, re-run `npm install` to pick up dependency changes.
+ *   - npm: re-run `pm.install(spec)` so npm can resolve to a newer version.
  *
- * Hard-fail policy: any clone/fetch/reset/npm-install error propagates to the
- * caller, which will surface it via `withStartupSummary.errors`.
+ * Hard-fail policy: any clone/fetch/install error propagates to the caller,
+ * which will surface it via `withStartupSummary.errors`.
  */
 
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { DefaultPackageManager, getAgentDir, type PackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { isPinnedGitSpec, scanCloneForCandidates } from "./resolver.js";
+import { getRemoteScheme, isPinnedGitSpec, isPinnedRemoteSpec, scanCloneForCandidates } from "./resolver.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -33,6 +38,8 @@ export interface EnsureRemoteResult {
 	touched: boolean;
 	/** True if a fetch moved HEAD. */
 	changed: boolean;
+	/** True if the clone is a monorepo (`packages/` layout). */
+	isMonorepo: boolean;
 }
 
 // ── PackageManager singleton ─────────────────────────────────────────────
@@ -93,20 +100,21 @@ function runGit(args: string[], cwd: string): string {
 export async function ensureRemote(
 	spec: string,
 	pm: PackageManager,
-	options: { reportProgress?: ProgressReporter; env?: NodeJS.ProcessEnv } = {},
+	options: { reportProgress?: ProgressReporter; env?: NodeJS.ProcessEnv; alias?: string } = {},
 ): Promise<EnsureRemoteResult> {
 	const report = options.reportProgress ?? (() => {});
 	const env = options.env ?? process.env;
+	const scheme = getRemoteScheme(spec);
 
-	// First-time clone via Pi's package manager. This is a no-op if the dir
-	// exists, which means we can call it cheaply on every session.
-	let cloneDir = pm.getInstalledPath(spec, "user");
-	const existedBefore = Boolean(cloneDir && existsSync(cloneDir));
+	// First-time install via Pi's package manager. This is a no-op if the dir
+	// already exists, which means we can call it cheaply on every session.
+	let installPath = pm.getInstalledPath(spec, "user");
+	const existedBefore = Boolean(installPath && existsSync(installPath));
 	if (!existedBefore) {
-		report(`[loader-with] cloning ${spec}`);
+		report(`[loader-with] ${scheme === "npm" ? "installing" : "cloning"} ${spec}`);
 		await pm.install(spec);
-		cloneDir = pm.getInstalledPath(spec, "user");
-		if (!cloneDir || !existsSync(cloneDir)) {
+		installPath = pm.getInstalledPath(spec, "user");
+		if (!installPath || !existsSync(installPath)) {
 			throw new Error(`pm.install("${spec}") succeeded but install path is missing`);
 		}
 	}
@@ -114,26 +122,37 @@ export async function ensureRemote(
 	let touched = !existedBefore;
 	let changed = false;
 
-	// Refresh policy: unpinned + online + clone existed before this session.
-	const pinned = isPinnedGitSpec(spec);
-	if (!pinned && existedBefore && !isOfflineMode(env)) {
-		const ref = extractRef(spec) ?? "HEAD";
-		const remoteSpec = ref === "HEAD" ? ["origin"] : ["origin", ref];
-		const before = runGit(["rev-parse", "HEAD"], cloneDir as string);
-		report(`[loader-with] refreshing ${spec}`);
-		runGit(["fetch", ...remoteSpec, "--depth=1"], cloneDir as string);
-		runGit(["reset", "--hard", "FETCH_HEAD"], cloneDir as string);
-		const after = runGit(["rev-parse", "HEAD"], cloneDir as string);
-		touched = true;
-		changed = before !== after;
-		if (changed) {
-			report(`[loader-with] HEAD moved ${before.slice(0, 7)} → ${after.slice(0, 7)}, running npm install`);
-			// Re-run npm install. Use plain `npm`, deferring `npmCommand`
-			// configurability (a settings.json knob) until anyone asks for it.
-			execFileSync("npm", ["install"], { cwd: cloneDir as string, stdio: "inherit" });
+	// Refresh policy: unpinned + online + already-existed-this-session.
+	const shouldRefresh = !isPinnedRemoteSpec(spec) && existedBefore && !isOfflineMode(env);
+	if (shouldRefresh) {
+		if (scheme === "npm") {
+			// Let npm re-resolve the version. pm.install handles the dist-tag
+			// (`latest` or bare name) and updates `node_modules/<pkg>` in place.
+			report(`[loader-with] refreshing ${spec}`);
+			await pm.install(spec);
+			touched = true;
+			// We don't get a cheap "version moved?" signal from pm.install, so
+			// `changed` stays false. Downstream code only uses it for git's
+			// optional re-install — npm install already handled deps.
+		} else {
+			const ref = extractRef(spec) ?? "HEAD";
+			const remoteSpec = ref === "HEAD" ? ["origin"] : ["origin", ref];
+			const before = runGit(["rev-parse", "HEAD"], installPath as string);
+			report(`[loader-with] refreshing ${spec}`);
+			runGit(["fetch", ...remoteSpec, "--depth=1"], installPath as string);
+			runGit(["reset", "--hard", "FETCH_HEAD"], installPath as string);
+			const after = runGit(["rev-parse", "HEAD"], installPath as string);
+			touched = true;
+			changed = before !== after;
+			if (changed) {
+				report(`[loader-with] HEAD moved ${before.slice(0, 7)} → ${after.slice(0, 7)}, running npm install`);
+				// Re-run npm install. Use plain `npm`, deferring `npmCommand`
+				// configurability (a settings.json knob) until anyone asks for it.
+				execFileSync("npm", ["install"], { cwd: installPath as string, stdio: "inherit" });
+			}
 		}
 	}
 
-	const candidates = scanCloneForCandidates(cloneDir as string);
-	return { cloneDir: cloneDir as string, candidates, touched, changed };
+	const { candidates, isMonorepo } = scanCloneForCandidates(installPath as string, options.alias);
+	return { cloneDir: installPath as string, candidates, touched, changed, isMonorepo };
 }

@@ -1,5 +1,5 @@
 ---
-name: reviewer
+name: code-reviewer
 description: Code review and quality checks
 tools: read,bash,grep,find,ls
 ---

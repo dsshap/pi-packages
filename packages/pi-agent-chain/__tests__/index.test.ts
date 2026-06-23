@@ -17,11 +17,11 @@ describe("@dsshap/pi-agent-chain package layout", () => {
 	it("ships the bundled agents directory", () => {
 		expect(existsSync(agentsDir)).toBe(true);
 		const files = readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
-		// builder, reviewer, planner, scout, plan-reviewer, documenter, red-team, bowser
+		// builder, code-reviewer, planner, scout, plan-reviewer, documenter, red-team, bowser
 		expect(files.length).toBeGreaterThanOrEqual(8);
 		for (const required of [
 			"builder.md",
-			"reviewer.md",
+			"code-reviewer.md",
 			"planner.md",
 			"scout.md",
 			"plan-reviewer.md",
@@ -53,6 +53,15 @@ describe("@dsshap/pi-agent-chain package layout", () => {
 		expect(src).toMatch(/registerTool\(\s*\{\s*name:\s*"run_chain"/);
 		expect(src).toMatch(/registerCommand\("chain"/);
 		expect(src).toMatch(/registerCommand\("chain-list"/);
+		expect(src).toMatch(/registerCommand\("chain-send"/);
+	});
+
+	it("scopes subagent session files by parent session id", () => {
+		const src = readFileSync(extEntry, "utf-8");
+		expect(src).toContain("agent-sessions");
+		expect(src).toMatch(/parentSessionKey\(ctx\)/);
+		expect(src).toMatch(/resolve\(cwd, "\.pi", "agent-sessions", parentSessionKey\(ctx\)\)/);
+		expect(src).not.toContain('join(cwd, ".pi", "agent-sessions")');
 	});
 
 	it("uses the @earendil-works package namespace, not @mariozechner", () => {

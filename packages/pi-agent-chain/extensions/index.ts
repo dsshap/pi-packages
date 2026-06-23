@@ -1431,15 +1431,31 @@ ${steps}
 
 ${agentCatalog}
 
+## Delegation Policy for File-Changing Work
+By default, any task that creates, edits, deletes, renames, formats, or otherwise modifies files must be delegated through run_chain.
+
+Do not directly use file-changing tools such as write, edit, or mutating bash commands for implementation work unless the user explicitly grants permission for direct edits in this conversation.
+
+Examples of explicit permission:
+- "You can edit directly."
+- "Make the change yourself without running the chain."
+- "Skip the chain and patch it directly."
+- "Direct edits are okay."
+
+If direct-edit permission is ambiguous, do not assume it. Use run_chain.
+
 ## When to Use run_chain
-- Significant work: new features, refactors, multi-file changes, anything non-trivial
+- Any file-changing task by default
+- New features, bug fixes, refactors, tests, docs updates, config changes, or dependency changes
+- Significant work: multi-step or multi-file changes, anything non-trivial
 - Tasks that benefit from the full pipeline: planning, building, reviewing
-- When you want structured, multi-agent collaboration on a problem
+- Any case where direct-edit permission has not been explicitly granted
 
 ## When to Work Directly
-- Simple one-off commands: reading a file, checking status, listing contents
-- Quick lookups, small edits, answering questions about the codebase
-- Anything you can handle in a single step without needing the pipeline
+- Read-only investigation: reading files, checking status, listing contents, searching
+- Quick lookups and answering questions about the codebase
+- Planning or clarifying a task description for the chain
+- File edits only when the user explicitly grants permission for direct edits
 
 ## How run_chain Works
 - Pass a clear task description to run_chain
@@ -1449,9 +1465,9 @@ ${agentCatalog}
 - After the chain completes, review the result and summarize for the user
 
 ## Guidelines
-- Use your judgment — if it's quick, just do it; if it's real work, run the chain
+- Default to run_chain for repository modifications; direct edits are opt-in, not assumed
 - Keep chain tasks focused and clearly described
-- You can mix direct work and chain runs in the same conversation`;
+- You can mix read-only direct work and chain runs in the same conversation`;
 
 		return {
 			systemPrompt: base ? `${base}\n\n---\n\n${chainPrompt}` : chainPrompt,
